@@ -448,7 +448,7 @@ export function createBuildingCustomLayer(
   let camera: THREE.Camera;
 
   const refMerc = maplibregl.MercatorCoordinate.fromLngLat([REF_LNG, REF_LAT], 0);
-  const s = refMerc.meterInMercatorCoordinateUnits();
+  const s = refMerc.meterInMercatorCoordinateUnits() * 4;
 
   // Kept separately so we can swap them out when models finish loading
   let buildingGroups: THREE.Group[] = [];
