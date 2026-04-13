@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import maplibregl from "maplibre-gl";
 import { restaurants } from "@/data/restaurants";
 import { Restaurant, Category } from "@/types/restaurant";
@@ -496,13 +497,13 @@ export function createBuildingCustomLayer(
       scene = new THREE.Scene();
 
       // Lighting — Z is up
-      scene.add(new THREE.AmbientLight(0x404060, 2.0));
+      scene.add(new THREE.AmbientLight(0xffffff, 3.0));
 
-      const dir = new THREE.DirectionalLight(0xffeedd, 1.5);
+      const dir = new THREE.DirectionalLight(0xffeedd, 2.5);
       dir.position.set(0.5, -0.3, 1.0);
       scene.add(dir);
 
-      const dir2 = new THREE.DirectionalLight(0x8888ff, 0.5);
+      const dir2 = new THREE.DirectionalLight(0x8888ff, 1.0);
       dir2.position.set(-0.3, 0.5, 0.8);
       scene.add(dir2);
 
@@ -525,6 +526,11 @@ export function createBuildingCustomLayer(
         antialias: true,
       });
       renderer.autoClear = false;
+
+      // IBL environment — makes PBR (GLB) materials receive light correctly
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      scene.environment = pmrem.fromScene(new RoomEnvironment()).texture;
+      pmrem.dispose();
 
       // Second pass: upgrade to GLB models when they finish loading
       const loader = new GLTFLoader();
