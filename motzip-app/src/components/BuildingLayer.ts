@@ -184,7 +184,10 @@ function placeGlbModel(
 ): THREE.Group {
   const clone = template.clone(true);
 
-  // Compute bounds in model space
+  // glTF is Y-up; our scene is Z-up — rotate to align
+  clone.rotation.x = -Math.PI / 2;
+
+  // Compute bounds after rotation (Z-up space)
   const box = new THREE.Box3().setFromObject(clone);
   const size = box.getSize(new THREE.Vector3());
 
