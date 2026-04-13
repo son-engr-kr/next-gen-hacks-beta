@@ -1,0 +1,57 @@
+# Root-level
+/plan*.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# ---- motzip-app (Next.js) ----
+motzip-app/node_modules/
+motzip-app/.next/
+motzip-app/out/
+motzip-app/build/
+motzip-app/coverage/
+motzip-app/.vercel/
+motzip-app/*.tsbuildinfo
+motzip-app/next-env.d.ts
+motzip-app/.env*
+motzip-app/*.pem
+
+# ---- motzip-3d ----
+motzip-3d/TRELLIS/
+motzip-3d/extensions/
+motzip-3d/raw/
+motzip-3d/optimized/
+
+# ---- motzip-server (Python) ----
+motzip-server/.venv/
+motzip-server/venv/
+motzip-server/env/
+motzip-server/__pycache__/
+**/__pycache__/
+*.py[cod]
+*.so
+motzip-server/.python-version
+motzip-server/build/
+motzip-server/dist/
+*.egg-info/
+motzip-server/.pytest_cache/
+motzip-server/.coverage
+motzip-server/htmlcov/
+motzip-server/.env
+motzip-server/.env.*
+!motzip-server/.env.example
+
+# Secrets (defense in depth)
+*.pem
+*.key
+id_rsa*

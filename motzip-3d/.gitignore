@@ -1,0 +1,14 @@
+# Upstream TRELLIS repo — clone it manually
+TRELLIS/
+
+# CUDA extension source repos — clone them manually
+extensions/
+
+# Raw TRELLIS outputs (large, regeneratable)
+raw/
+
+# Intermediate optimized GLBs (generated from raw/ by optimize.sh)
+optimized/
+
+# Logs
+*.log

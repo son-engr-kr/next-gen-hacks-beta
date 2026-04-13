@@ -1,0 +1,121 @@
+@import "tailwindcss";
+
+:root {
+  --background: #030712;
+  --foreground: #ededed;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+}
+
+/* Panel slide-in */
+@keyframes slide-in {
+  from {
+    transform: translateX(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Emoji markers floating above buildings */
+.category-marker {
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.category-marker span {
+  display: inline-block;
+  font-size: 36px;
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.8)) drop-shadow(0 0 4px rgba(255, 200, 0, 0.15));
+  animation: float 3s ease-in-out infinite;
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.category-marker:hover span {
+  transform: scale(1.4) translateY(-4px);
+  filter: drop-shadow(0 6px 16px rgba(0, 0, 0, 0.6)) drop-shadow(0 0 8px rgba(255, 200, 0, 0.3));
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+/* MapLibre control overrides */
+.maplibregl-ctrl-attrib {
+  font-size: 9px !important;
+  opacity: 0.3;
+  background: transparent !important;
+}
+
+.maplibregl-ctrl-attrib a {
+  color: rgba(255, 255, 255, 0.3) !important;
+}
+
+.maplibregl-ctrl-group {
+  background: rgba(3, 7, 18, 0.7) !important;
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  border-radius: 16px !important;
+  backdrop-filter: blur(16px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
+  overflow: hidden;
+}
+
+.maplibregl-ctrl-group button {
+  width: 36px !important;
+  height: 36px !important;
+  border: none !important;
+}
+
+.maplibregl-ctrl-group button + button {
+  border-top: 1px solid rgba(255, 255, 255, 0.04) !important;
+}
+
+.maplibregl-ctrl button .maplibregl-ctrl-icon {
+  filter: invert(1) brightness(0.7);
+}
+
+.maplibregl-ctrl button:hover .maplibregl-ctrl-icon {
+  filter: invert(1) brightness(1);
+}
+
+.maplibregl-user-location-dot {
+  box-shadow: 0 0 16px 6px rgba(59, 130, 246, 0.4);
+}
+
+/* Scrollbar for panel */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
