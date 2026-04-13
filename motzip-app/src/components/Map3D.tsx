@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { restaurants } from "@/data/restaurants";
-import { Restaurant, categoryEmoji } from "@/types/restaurant";
+import { Restaurant } from "@/types/restaurant";
 import { createBuildingCustomLayer } from "./BuildingLayer";
 import RestaurantPanel from "./RestaurantPanel";
 import Fireworks from "./Fireworks";
@@ -43,7 +43,6 @@ const DEFAULT_CENTER: [number, number] = [-71.058, 42.355];
 export default function Map3D() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
-  const markersRef = useRef<maplibregl.Marker[]>([]);
   const [selected, setSelected] = useState<Restaurant | null>(null);
   const [trendingScreenPositions, setTrendingScreenPositions] = useState<
     { x: number; y: number }[]
@@ -132,69 +131,6 @@ export default function Map3D() {
         map.getCanvas().style.cursor = "";
       });
 
-      // Calculate pixel offset for building top based on camera
-      const calcTopOffset = (heightMeters: number): number => {
-        const pitch = map.getPitch() * Math.PI / 180;
-        const zoom = map.getZoom();
-        // Meters-to-pixels at current zoom (approximate at Boston latitude)
-        const pixelsPerMeter = Math.pow(2, zoom) / (156543.03392 * Math.cos(42.355 * Math.PI / 180));
-        return -heightMeters * pixelsPerMeter * Math.sin(pitch);
-      };
-
-      // Category emoji markers — only show at high zoom
-      type MarkerEntry = { marker: maplibregl.Marker; height: number };
-      const markerEntries: MarkerEntry[] = [];
-
-      const rebuildMarkers = () => {
-        const zoom = map.getZoom();
-        const bounds = map.getBounds();
-        const showMarkers = zoom >= 14;
-
-        markersRef.current.forEach((m) => m.remove());
-        markersRef.current = [];
-        markerEntries.length = 0;
-
-        if (!showMarkers) return;
-
-        const visible = restaurants.filter(
-          (r) =>
-            r.lat >= bounds.getSouth() &&
-            r.lat <= bounds.getNorth() &&
-            r.lng >= bounds.getWest() &&
-            r.lng <= bounds.getEast()
-        );
-
-        for (const r of visible) {
-          const el = document.createElement("div");
-          el.className = "category-marker";
-          const span = document.createElement("span");
-          span.textContent = categoryEmoji[r.category];
-          el.appendChild(span);
-          el.addEventListener("click", (e) => {
-            e.stopPropagation();
-            setSelected(r);
-            map.flyTo({ center: [r.lng, r.lat], zoom: 16, pitch: 55, duration: 800 });
-          });
-
-          const buildingHeight = Math.max(30, r.reviewCount * 0.6);
-          const offsetY = calcTopOffset(buildingHeight);
-          const marker = new maplibregl.Marker({ element: el, anchor: "bottom" })
-            .setLngLat([r.lng, r.lat])
-            .setOffset([0, offsetY])
-            .addTo(map);
-
-          markersRef.current.push(marker);
-          markerEntries.push({ marker, height: buildingHeight });
-        }
-      };
-
-      // Re-calculate offsets on camera move (zoom/pitch change building apparent height)
-      const updateMarkerOffsets = () => {
-        for (const entry of markerEntries) {
-          entry.marker.setOffset([0, calcTopOffset(entry.height)]);
-        }
-      };
-
       // Update trending firework positions
       const updateFireworks = () => {
         const canvas = map.getCanvas();
@@ -210,18 +146,10 @@ export default function Map3D() {
         setTrendingScreenPositions(positions);
       };
 
-      rebuildMarkers();
       updateFireworks();
 
-      map.on("moveend", () => {
-        rebuildMarkers();
-        updateFireworks();
-      });
-      map.on("zoomend", rebuildMarkers);
-      map.on("move", () => {
-        updateMarkerOffsets();
-        updateFireworks();
-      });
+      map.on("moveend", updateFireworks);
+      map.on("move", updateFireworks);
     });
 
     // Navigation (zoom only, no compass)
@@ -237,8 +165,6 @@ export default function Map3D() {
     );
 
     return () => {
-      markersRef.current.forEach((m) => m.remove());
-      markersRef.current = [];
       map.remove();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps

@@ -100,6 +100,16 @@ function getBuildingTier(reviewCount: number, rating: number): "landmark" | "maj
   return "regular";
 }
 
+function getBuildingTopZ(r: Restaurant, s: number): number {
+  const tier = getBuildingTier(r.reviewCount, r.rating);
+  switch (tier) {
+    case "landmark": return r.reviewCount * 1.2 * s;
+    case "major":    return r.reviewCount * 0.9 * s;
+    case "mid":      return r.reviewCount * 0.7 * s;
+    default:         return Math.max(30, r.reviewCount * 0.6) * s;
+  }
+}
+
 function makeWallMat(texture: THREE.CanvasTexture, rating: number, metalBoost = 0) {
   return new THREE.MeshStandardMaterial({
     map: texture,
@@ -160,6 +170,7 @@ type LandmarkModelKey = `landmark_${Category}`;
 type ModelKey = TierModelKey | LandmarkModelKey;
 
 type BuildingModels = Partial<Record<ModelKey, THREE.Group>>;
+type FoodModels = Partial<Record<Category, THREE.Group>>;
 
 /**
  * Clone a loaded GLB scene, scale it to (targetW × targetW × targetH) Mercator
@@ -397,6 +408,32 @@ async function loadBuildingModels(loader: GLTFLoader): Promise<BuildingModels> {
   return models;
 }
 
+const FOOD_CATEGORIES: Category[] = [
+  "burger", "pizza", "sushi", "ramen", "cafe", "mexican",
+  "italian", "chinese", "thai", "steakhouse", "seafood", "bakery",
+];
+
+async function loadFoodModels(loader: GLTFLoader): Promise<FoodModels> {
+  const models: FoodModels = {};
+  await Promise.allSettled(
+    FOOD_CATEGORIES.map(
+      (cat) =>
+        new Promise<void>((resolve) => {
+          loader.load(
+            `/models/food/${cat}.glb`,
+            (gltf) => {
+              models[cat] = gltf.scene as THREE.Group;
+              resolve();
+            },
+            undefined,
+            () => resolve(),
+          );
+        }),
+    ),
+  );
+  return models;
+}
+
 // ── Custom layer export ────────────────────────────────────────────────────────
 
 export function createBuildingCustomLayer(
@@ -411,6 +448,7 @@ export function createBuildingCustomLayer(
 
   // Kept separately so we can swap them out when models finish loading
   let buildingGroups: THREE.Group[] = [];
+  let foodIconGroups: { outer: THREE.Group; baseZ: number }[] = [];
 
   function rebuildBuildings(models: BuildingModels | null) {
     buildingGroups.forEach((g) => scene.remove(g));
@@ -420,6 +458,29 @@ export function createBuildingCustomLayer(
       const g = createBuildingGroup(r, refMerc, s, models);
       scene.add(g);
       buildingGroups.push(g);
+    }
+  }
+
+  function rebuildFoodIcons(food: FoodModels) {
+    foodIconGroups.forEach(({ outer }) => scene.remove(outer));
+    foodIconGroups = [];
+
+    const SIZE = 14 * s;
+    const FLOAT_GAP = 6 * s;
+
+    for (const r of restaurants) {
+      const template = food[r.category];
+      if (!template) continue;
+
+      const icon = placeGlbModel(template, SIZE, SIZE);
+      const merc = maplibregl.MercatorCoordinate.fromLngLat([r.lng, r.lat], 0);
+      const topZ = getBuildingTopZ(r, s);
+
+      const outer = new THREE.Group();
+      outer.position.set(merc.x - refMerc.x, merc.y - refMerc.y, topZ + FLOAT_GAP);
+      outer.add(icon);
+      scene.add(outer);
+      foodIconGroups.push({ outer, baseZ: topZ + FLOAT_GAP });
     }
   }
 
@@ -465,9 +526,14 @@ export function createBuildingCustomLayer(
       // Second pass: upgrade to GLB models when they finish loading
       const loader = new GLTFLoader();
       loadBuildingModels(loader).then((models) => {
-        const loaded = Object.keys(models).length;
-        if (loaded > 0) {
+        if (Object.keys(models).length > 0) {
           rebuildBuildings(models);
+          map.triggerRepaint();
+        }
+      });
+      loadFoodModels(loader).then((food) => {
+        if (Object.keys(food).length > 0) {
+          rebuildFoodIcons(food);
           map.triggerRepaint();
         }
       });
@@ -475,6 +541,11 @@ export function createBuildingCustomLayer(
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     render(_gl: WebGLRenderingContext, args: any) {
+      const t = Date.now() / 1000;
+      foodIconGroups.forEach(({ outer, baseZ }, i) => {
+        outer.position.z = baseZ + Math.sin(t * 1.5 + i * 0.8) * 5 * s;
+      });
+
       const m = new THREE.Matrix4().fromArray(args.defaultProjectionData.mainMatrix);
       const l = new THREE.Matrix4().makeTranslation(refMerc.x, refMerc.y, refMerc.z);
 
