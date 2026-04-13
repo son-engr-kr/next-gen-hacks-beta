@@ -1,7 +1,8 @@
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import maplibregl from "maplibre-gl";
 import { restaurants } from "@/data/restaurants";
-import { Restaurant } from "@/types/restaurant";
+import { Restaurant, Category } from "@/types/restaurant";
 
 // --- Procedural window texture ---
 function createWindowTexture(
@@ -152,108 +153,251 @@ function addCylinderSection(
   return zBase + h;
 }
 
-function createBuildingMesh(
-  r: Restaurant,
-  scene: THREE.Scene,
-  refMerc: maplibregl.MercatorCoordinate,
-  s: number
-) {
-  const tier = getBuildingTier(r.reviewCount, r.rating);
+// ── GLB model types ────────────────────────────────────────────────────────────
+
+type TierModelKey = "building_regular" | "building_mid" | "building_major";
+type LandmarkModelKey = `landmark_${Category}`;
+type ModelKey = TierModelKey | LandmarkModelKey;
+
+type BuildingModels = Partial<Record<ModelKey, THREE.Group>>;
+
+/**
+ * Clone a loaded GLB scene, scale it to (targetW × targetW × targetH) Mercator
+ * units, and position the bottom face at z=0.
+ * MapLibre's projection flips winding order so we apply DoubleSide to all meshes.
+ */
+function placeGlbModel(
+  template: THREE.Group,
+  targetW: number,
+  targetH: number,
+): THREE.Group {
+  const clone = template.clone(true);
+
+  // Compute bounds in model space
+  const box = new THREE.Box3().setFromObject(clone);
+  const size = box.getSize(new THREE.Vector3());
+
+  // Uniform scale: fit within targetW × targetW footprint AND targetH height
+  const scaleXY = targetW / Math.max(size.x, size.y);
+  const scaleZ  = targetH / size.z;
+  const sc = Math.min(scaleXY, scaleZ);
+  clone.scale.setScalar(sc);
+
+  // Recompute bounds after scaling and lift so bottom sits at z=0
+  const box2 = new THREE.Box3().setFromObject(clone);
+  clone.position.z = -box2.min.z;
+
+  // Fix culling: MapLibre projection flips winding, use DoubleSide for GLB meshes
+  clone.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh) {
+      const mesh = child as THREE.Mesh;
+      const applyDouble = (m: THREE.Material) => { m.side = THREE.DoubleSide; };
+      if (Array.isArray(mesh.material)) {
+        mesh.material.forEach(applyDouble);
+      } else if (mesh.material) {
+        applyDouble(mesh.material);
+      }
+    }
+  });
+
+  return clone;
+}
+
+// ── Procedural building builders ───────────────────────────────────────────────
+
+function buildProceduralLandmark(r: Restaurant, s: number): THREE.Group {
   const group = new THREE.Group();
+  const totalH = r.reviewCount * 1.2 * s;
+  const baseW = 35 * s;
 
-  const merc = maplibregl.MercatorCoordinate.fromLngLat([r.lng, r.lat], 0);
-  group.position.set(merc.x - refMerc.x, merc.y - refMerc.y, 0);
-
-  const tex = createWindowTexture(r.rating, r.isTrending);
+  const tex  = createWindowTexture(r.rating, r.isTrending);
   const tex2 = createWindowTexture(r.rating + 0.3, r.isTrending, 48, 96);
 
+  const wall0 = makeWallMat(tex, r.rating);
+  const top0  = makeTopMat(r.rating);
+  let z = 0;
+  z = addBoxSection(group, baseW, baseW, totalH * 0.15, z, wall0, top0);
+
+  const wall1 = makeWallMat(tex, r.rating, 0.2);
+  const top1  = makeTopMat(r.rating, true);
+  z = addBoxSection(group, baseW * 0.7, baseW * 0.7, totalH * 0.30, z, wall1, top1);
+
+  const wall2  = makeWallMat(tex2, r.rating, 0.4);
+  const tier2W = baseW * 0.5;
+  const geo2   = new THREE.BoxGeometry(tier2W, tier2W, totalH * 0.25);
+  geo2.translate(0, 0, z + totalH * 0.25 / 2);
+  const mesh2 = new THREE.Mesh(geo2, [wall2, wall2, wall2, wall2, makeTopMat(r.rating, true), bottomMat]);
+  mesh2.rotation.z = Math.PI / 4;
+  group.add(mesh2);
+  z += totalH * 0.25;
+
+  const spireMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color("#FFD700"),
+    emissive: new THREE.Color(1.0, 0.8, 0.2),
+    emissiveIntensity: 0.6,
+    metalness: 0.95,
+    roughness: 0.05,
+    side: THREE.BackSide,
+  });
+  addCylinderSection(group, baseW * 0.15, baseW * 0.02, totalH * 0.30, z, spireMat, spireMat, 6);
+
+  return group;
+}
+
+function buildProceduralMajor(r: Restaurant, s: number): THREE.Group {
+  const group  = new THREE.Group();
+  const totalH = r.reviewCount * 0.9 * s;
+  const baseW  = 26 * s;
+
+  const tex  = createWindowTexture(r.rating, r.isTrending);
+  const tex2 = createWindowTexture(r.rating, r.isTrending, 48, 96);
+
+  const wall0 = makeWallMat(tex, r.rating);
+  const top0  = makeTopMat(r.rating);
+  let z = 0;
+
+  z = addBoxSection(group, baseW, baseW, totalH * 0.4, z, wall0, top0);
+  const wall1 = makeWallMat(tex2, r.rating, 0.15);
+  z = addBoxSection(group, baseW * 0.7, baseW * 0.7, totalH * 0.35, z, wall1, makeTopMat(r.rating));
+  const wall2 = makeWallMat(tex, r.rating, 0.3);
+  z = addBoxSection(group, baseW * 0.45, baseW * 0.45, totalH * 0.25, z, wall2, makeTopMat(r.rating, true));
+
+  const antMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color("#cccccc"),
+    metalness: 0.9, roughness: 0.1, side: THREE.BackSide,
+  });
+  addCylinderSection(group, baseW * 0.03, baseW * 0.01, totalH * 0.12, z, antMat, antMat, 4);
+
+  return group;
+}
+
+function buildProceduralMid(r: Restaurant, s: number): THREE.Group {
+  const group  = new THREE.Group();
+  const totalH = r.reviewCount * 0.7 * s;
+  const baseW  = 18 * s;
+
+  const tex  = createWindowTexture(r.rating, r.isTrending);
+  const tex2 = createWindowTexture(r.rating, r.isTrending, 48, 96);
+
+  const wall0 = makeWallMat(tex, r.rating);
+  let z = 0;
+
+  z = addBoxSection(group, baseW, baseW, totalH * 0.55, z, wall0, makeTopMat(r.rating));
+  const wall1 = makeWallMat(tex2, r.rating, 0.1);
+  addBoxSection(group, baseW * 0.65, baseW * 0.65, totalH * 0.45, z, wall1, makeTopMat(r.rating));
+
+  return group;
+}
+
+function buildProceduralRegular(r: Restaurant, s: number): THREE.Group {
+  const group       = new THREE.Group();
+  const hMeters     = Math.max(30, r.reviewCount * 0.6);
+  const baseMeters  = 12 + Math.min(r.reviewCount * 0.01, 8);
+  const w = baseMeters * s;
+  const h = hMeters * s;
+
+  const tex  = createWindowTexture(r.rating, r.isTrending);
+  const wall = makeWallMat(tex, r.rating);
+  addBoxSection(group, w, w, h, 0, wall, makeTopMat(r.rating));
+
+  return group;
+}
+
+// ── Main building creator ──────────────────────────────────────────────────────
+
+function createBuildingGroup(
+  r: Restaurant,
+  refMerc: maplibregl.MercatorCoordinate,
+  s: number,
+  models: BuildingModels | null,
+): THREE.Group {
+  const tier  = getBuildingTier(r.reviewCount, r.rating);
+  const merc  = maplibregl.MercatorCoordinate.fromLngLat([r.lng, r.lat], 0);
+
+  const outer = new THREE.Group();
+  outer.position.set(merc.x - refMerc.x, merc.y - refMerc.y, 0);
+
+  let inner: THREE.Group;
+
   if (tier === "landmark") {
-    // === LANDMARK: Burj Khalifa-style stepped tower ===
-    const totalH = r.reviewCount * 1.2 * s;
-    const baseW = 35 * s;
-
-    // Wide base podium
-    const wall0 = makeWallMat(tex, r.rating);
-    const top0 = makeTopMat(r.rating);
-    let z = 0;
-    z = addBoxSection(group, baseW, baseW, totalH * 0.15, z, wall0, top0);
-
-    // Main tower section (3 stepped tiers)
-    const wall1 = makeWallMat(tex, r.rating, 0.2);
-    const top1 = makeTopMat(r.rating, true);
-    z = addBoxSection(group, baseW * 0.7, baseW * 0.7, totalH * 0.30, z, wall1, top1);
-
-    // Second tier, rotated 45deg for visual interest
-    const wall2 = makeWallMat(tex2, r.rating, 0.4);
-    const tier2W = baseW * 0.5;
-    const geo2 = new THREE.BoxGeometry(tier2W, tier2W, totalH * 0.25);
-    geo2.translate(0, 0, z + totalH * 0.25 / 2);
-    const mesh2 = new THREE.Mesh(geo2, [wall2, wall2, wall2, wall2, makeTopMat(r.rating, true), bottomMat]);
-    mesh2.rotation.z = Math.PI / 4;
-    group.add(mesh2);
-    z += totalH * 0.25;
-
-    // Tapered spire
-    const spireMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#FFD700"),
-      emissive: new THREE.Color(1.0, 0.8, 0.2),
-      emissiveIntensity: 0.6,
-      metalness: 0.95,
-      roughness: 0.05,
-      side: THREE.BackSide,
-    });
-    z = addCylinderSection(group, baseW * 0.15, baseW * 0.02, totalH * 0.30, z, spireMat, spireMat, 6);
+    const modelKey = `landmark_${r.category}` as LandmarkModelKey;
+    const template = models?.[modelKey];
+    if (template) {
+      const totalH = r.reviewCount * 1.2 * s;
+      const baseW  = 35 * s;
+      inner = placeGlbModel(template, baseW, totalH);
+    } else {
+      inner = buildProceduralLandmark(r, s);
+    }
 
   } else if (tier === "major") {
-    // === MAJOR: 3-tier stepped tower ===
-    const totalH = r.reviewCount * 0.9 * s;
-    const baseW = 26 * s;
-
-    const wall0 = makeWallMat(tex, r.rating);
-    const top0 = makeTopMat(r.rating);
-    let z = 0;
-
-    // Base
-    z = addBoxSection(group, baseW, baseW, totalH * 0.4, z, wall0, top0);
-    // Middle
-    const wall1 = makeWallMat(tex2, r.rating, 0.15);
-    z = addBoxSection(group, baseW * 0.7, baseW * 0.7, totalH * 0.35, z, wall1, makeTopMat(r.rating));
-    // Top
-    const wall2 = makeWallMat(tex, r.rating, 0.3);
-    z = addBoxSection(group, baseW * 0.45, baseW * 0.45, totalH * 0.25, z, wall2, makeTopMat(r.rating, true));
-
-    // Antenna
-    const antMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#cccccc"),
-      metalness: 0.9, roughness: 0.1, side: THREE.BackSide,
-    });
-    addCylinderSection(group, baseW * 0.03, baseW * 0.01, totalH * 0.12, z, antMat, antMat, 4);
+    const template = models?.["building_major"];
+    if (template) {
+      const totalH = r.reviewCount * 0.9 * s;
+      const baseW  = 26 * s;
+      inner = placeGlbModel(template, baseW, totalH);
+    } else {
+      inner = buildProceduralMajor(r, s);
+    }
 
   } else if (tier === "mid") {
-    // === MID: 2-tier building ===
-    const totalH = r.reviewCount * 0.7 * s;
-    const baseW = 18 * s;
-
-    const wall0 = makeWallMat(tex, r.rating);
-    let z = 0;
-
-    z = addBoxSection(group, baseW, baseW, totalH * 0.55, z, wall0, makeTopMat(r.rating));
-    const wall1 = makeWallMat(tex2, r.rating, 0.1);
-    addBoxSection(group, baseW * 0.65, baseW * 0.65, totalH * 0.45, z, wall1, makeTopMat(r.rating));
+    const template = models?.["building_mid"];
+    if (template) {
+      const totalH = r.reviewCount * 0.7 * s;
+      const baseW  = 18 * s;
+      inner = placeGlbModel(template, baseW, totalH);
+    } else {
+      inner = buildProceduralMid(r, s);
+    }
 
   } else {
-    // === REGULAR: simple box ===
-    const hMeters = Math.max(30, r.reviewCount * 0.6);
-    const baseMeters = 12 + Math.min(r.reviewCount * 0.01, 8);
-    const w = baseMeters * s;
-    const h = hMeters * s;
-
-    const wall = makeWallMat(tex, r.rating);
-    addBoxSection(group, w, w, h, 0, wall, makeTopMat(r.rating));
+    const template = models?.["building_regular"];
+    if (template) {
+      const hMeters = Math.max(30, r.reviewCount * 0.6);
+      const bMeters = 12 + Math.min(r.reviewCount * 0.01, 8);
+      inner = placeGlbModel(template, bMeters * s, hMeters * s);
+    } else {
+      inner = buildProceduralRegular(r, s);
+    }
   }
 
-  scene.add(group);
+  outer.add(inner);
+  return outer;
 }
+
+// ── Model loading ──────────────────────────────────────────────────────────────
+
+const MODEL_KEYS: ModelKey[] = [
+  "building_regular", "building_mid", "building_major",
+  "landmark_burger", "landmark_pizza", "landmark_sushi", "landmark_ramen",
+  "landmark_cafe",   "landmark_mexican", "landmark_italian", "landmark_chinese",
+  "landmark_thai",   "landmark_steakhouse", "landmark_seafood", "landmark_bakery",
+];
+
+async function loadBuildingModels(loader: GLTFLoader): Promise<BuildingModels> {
+  const models: BuildingModels = {};
+
+  await Promise.allSettled(
+    MODEL_KEYS.map(
+      (key) =>
+        new Promise<void>((resolve) => {
+          loader.load(
+            `/models/buildings/${key}.glb`,
+            (gltf) => {
+              models[key] = gltf.scene as THREE.Group;
+              resolve();
+            },
+            undefined,
+            () => resolve(), // missing model: silently fall back to procedural
+          );
+        }),
+    ),
+  );
+
+  return models;
+}
+
+// ── Custom layer export ────────────────────────────────────────────────────────
 
 export function createBuildingCustomLayer(
   map: maplibregl.Map
@@ -264,6 +408,20 @@ export function createBuildingCustomLayer(
 
   const refMerc = maplibregl.MercatorCoordinate.fromLngLat([REF_LNG, REF_LAT], 0);
   const s = refMerc.meterInMercatorCoordinateUnits();
+
+  // Kept separately so we can swap them out when models finish loading
+  let buildingGroups: THREE.Group[] = [];
+
+  function rebuildBuildings(models: BuildingModels | null) {
+    buildingGroups.forEach((g) => scene.remove(g));
+    buildingGroups = [];
+
+    for (const r of restaurants) {
+      const g = createBuildingGroup(r, refMerc, s, models);
+      scene.add(g);
+      buildingGroups.push(g);
+    }
+  }
 
   return {
     id: "3d-buildings",
@@ -277,21 +435,19 @@ export function createBuildingCustomLayer(
       scene.add(new THREE.AmbientLight(0x404060, 2.0));
 
       const dir = new THREE.DirectionalLight(0xffeedd, 1.5);
-      dir.position.set(0.5, -0.3, 1.0); // from above-southeast
+      dir.position.set(0.5, -0.3, 1.0);
       scene.add(dir);
 
       const dir2 = new THREE.DirectionalLight(0x8888ff, 0.5);
-      dir2.position.set(-0.3, 0.5, 0.8); // from above-northwest
+      dir2.position.set(-0.3, 0.5, 0.8);
       scene.add(dir2);
 
-      // Build all restaurants
-      for (const r of restaurants) {
-        createBuildingMesh(r, scene, refMerc, s);
-      }
+      // First pass: procedural geometry (instant)
+      rebuildBuildings(null);
 
       // Point lights above trending restaurants
       for (const r of restaurants.filter((r) => r.isTrending)) {
-        const merc = maplibregl.MercatorCoordinate.fromLngLat([r.lng, r.lat], 0);
+        const merc  = maplibregl.MercatorCoordinate.fromLngLat([r.lng, r.lat], 0);
         const hMerc = Math.max(30, r.reviewCount * 0.6) * s;
         const light = new THREE.PointLight(0xffaa00, 0.00002, s * 300);
         light.position.set(merc.x - refMerc.x, merc.y - refMerc.y, hMerc + s * 20);
@@ -305,6 +461,16 @@ export function createBuildingCustomLayer(
         antialias: true,
       });
       renderer.autoClear = false;
+
+      // Second pass: upgrade to GLB models when they finish loading
+      const loader = new GLTFLoader();
+      loadBuildingModels(loader).then((models) => {
+        const loaded = Object.keys(models).length;
+        if (loaded > 0) {
+          rebuildBuildings(models);
+          map.triggerRepaint();
+        }
+      });
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

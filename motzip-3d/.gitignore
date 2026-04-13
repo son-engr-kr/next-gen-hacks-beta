@@ -4,10 +4,13 @@ TRELLIS/
 # CUDA extension source repos — clone them manually
 extensions/
 
-# Raw TRELLIS outputs (large, regeneratable)
-raw/
+# Raw TRELLIS 3D outputs (large, regeneratable)
+3d/
 
-# Intermediate optimized GLBs (generated from raw/ by optimize.sh)
+# Preview images (regeneratable)
+images/
+
+# Intermediate optimized GLBs (generated from 3d/ by optimize.sh)
 optimized/
 
 # Logs

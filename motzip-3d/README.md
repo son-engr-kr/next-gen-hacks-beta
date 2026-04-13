@@ -30,8 +30,16 @@ motzip-3d/
 ├── extensions/                 # Custom CUDA extensions (built from source)
 │   ├── diffoctreerast/
 │   └── mip-splatting/
-├── raw/                        # Raw GLB output from TRELLIS
-├── optimized/                  # Optimized GLB (web-ready)
+├── 3d/                         # Raw GLB outputs from TRELLIS (git-ignored)
+│   ├── food/                   #   food icon models
+│   └── buildings/              #   building tier + landmark models
+├── images/                     # PNG preview renders (git-ignored)
+│   ├── food/
+│   └── buildings/
+├── optimized/                  # Web-ready GLBs after optimize.sh (git-ignored)
+│   ├── food/
+│   └── buildings/
+├── generate.py                 # CLI: text-to-3D batch pipeline
 ├── install_nvdiffrast.bat      # Helper: install nvdiffrast with MSVC env
 ├── install_extensions.bat      # Helper: build CUDA extensions
 ├── prompts.md                  # Generation prompts per category
@@ -170,9 +178,35 @@ python app_text.py
 
 We need 12 stylized models, one per category (burger, pizza, sushi, ramen, cafe, mexican, italian, chinese, thai, steakhouse, seafood, bakery).
 
-1. Open `prompts.md` for the recommended prompts.
-2. In Gradio UI, paste prompts or upload reference images.
-3. Save each output GLB to `motzip-3d/raw/` with the category name (e.g., `burger.glb`).
+### Automated pipeline (recommended)
+
+`generate.py` drives TRELLIS programmatically — no Gradio UI required.
+Run from `motzip-3d/` with the TRELLIS venv activated:
+
+```bash
+cd motzip-3d
+source TRELLIS/.venv/Scripts/activate
+
+python generate.py --all                        # food icons + buildings (first run ~5 GB download)
+python generate.py --all --type food            # food icons only
+python generate.py --all --type building        # building models only
+python generate.py --category landmark_burger   # single item
+python generate.py --all --manual               # pause after each for Y/n/retry
+python generate.py --all --skip-existing        # skip already-generated files
+python generate.py --all --optimize             # generate + optimize in one go
+python generate.py --all --seed 99              # custom seed
+```
+
+GLBs are saved to `motzip-3d/raw/<category>.glb`.
+
+### Manual (Gradio UI)
+
+```bash
+cd TRELLIS
+python app_text.py    # text-to-3D UI at http://localhost:7860
+```
+
+Open `prompts.md` for recommended prompts. Download each GLB and place it in `motzip-3d/raw/<category>.glb`.
 
 ### Tips for stylized food assets
 
@@ -202,7 +236,8 @@ The pipeline:
 2. **Draco compression** → ~70% smaller geometry
 3. **Texture resize** → max 512×512
 
-Output is auto-copied to `../motzip-app/public/models/`.
+Input: `3d/food/` and `3d/buildings/`.
+Output: `optimized/` → auto-copied to `../motzip-app/public/models/food/` and `.../buildings/`.
 
 Target: each final GLB <500KB.
 
