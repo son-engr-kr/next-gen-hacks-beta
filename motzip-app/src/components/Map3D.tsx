@@ -8,6 +8,7 @@ import { Restaurant } from "@/types/restaurant";
 import { createBuildingCustomLayer } from "./BuildingLayer";
 import RestaurantPanel from "./RestaurantPanel";
 import Fireworks from "./Fireworks";
+import VoiceSearch from "./VoiceSearch";
 
 const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:8000";
 
@@ -51,6 +52,21 @@ export default function Map3D() {
   >([]);
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [dataSource, setDataSource] = useState<"loading" | "live" | "static">("loading");
+  const [voiceResults, setVoiceResults] = useState<Restaurant[] | null>(null);
+  const [userPosition, setUserPosition] = useState<{ lat: number; lng: number }>(
+    { lat: DEFAULT_CENTER[1], lng: DEFAULT_CENTER[0] }
+  );
+
+  // Track user GPS position for voice search
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+    const wid = navigator.geolocation.watchPosition(
+      (pos) => setUserPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => {},
+      { enableHighAccuracy: true }
+    );
+    return () => navigator.geolocation.clearWatch(wid);
+  }, []);
 
   // Fetch restaurants from server, fall back to static data
   useEffect(() => {
@@ -286,6 +302,23 @@ export default function Map3D() {
       {selected && (
         <RestaurantPanel restaurant={selected} onClose={() => setSelected(null)} />
       )}
+
+      {/* Voice filter active badge */}
+      {voiceResults !== null && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-violet-950/80 border border-violet-500/20 text-violet-300 text-[11px] font-semibold backdrop-blur-xl shadow-lg">
+            <span className="text-violet-400">&#127908;</span>
+            음성 필터 적용됨 — {voiceResults.length}곳
+          </div>
+        </div>
+      )}
+
+      <VoiceSearch
+        userLat={userPosition.lat}
+        userLng={userPosition.lng}
+        onResults={(filtered) => setVoiceResults(filtered)}
+        onClear={() => setVoiceResults(null)}
+      />
     </div>
   );
 }

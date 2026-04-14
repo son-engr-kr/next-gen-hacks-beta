@@ -9,15 +9,18 @@ Requires Ollama running locally with Gemma:
 import asyncio
 import base64
 import json
+import math
 import os
 import sys
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, File, UploadFile, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
 
 OLLAMA_URL = "http://localhost:11434"
+ELEVENLABS_API_KEY  = os.getenv("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")  # Sarah
 MODEL = os.getenv("MOTZIP_MODEL", "gemma4:e4b-it-q4_K_M")
 OLLAMA_POLL_INTERVAL_SECONDS = 2
 
@@ -572,6 +575,198 @@ async def vision(
         r.raise_for_status()
 
     return {"response": r.json()["response"].strip()}
+
+
+# ── Voice Search ──────────────────────────────────────────────────────────────
+
+PRICE_LEVEL_MAX_USD: dict[str | None, float] = {
+    None: 9999,
+    "PRICE_LEVEL_FREE": 0,
+    "PRICE_LEVEL_INEXPENSIVE": 15,
+    "PRICE_LEVEL_MODERATE": 35,
+    "PRICE_LEVEL_EXPENSIVE": 70,
+    "PRICE_LEVEL_VERY_EXPENSIVE": 200,
+}
+
+VOICE_QUERY_PROMPT = """You are a restaurant search assistant. Extract search filters from the user's natural language query (supports English and Korean).
+
+Respond ONLY with a valid JSON object (no markdown):
+{
+  "categories": [],
+  "max_price_per_person": 0,
+  "min_rating": 0.0,
+  "distance_minutes": 0,
+  "vibe_keywords": [],
+  "party_size": 2,
+  "keywords": []
+}
+
+Field rules:
+- categories: subset of [burger, pizza, sushi, ramen, cafe, mexican, italian, chinese, thai, steakhouse, seafood, bakery], empty = any
+- max_price_per_person: max USD per person (e.g. 30), 0 = no limit
+- min_rating: 0-5, 0 = no preference
+- distance_minutes: max walking minutes, 0 = no limit
+- vibe_keywords: atmosphere tags like "romantic", "date night", "quiet", "cozy", "lively", "upscale", "casual"
+- party_size: number of diners
+- keywords: any other terms"""
+
+
+def _haversine_meters(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    R = 6_371_000
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+class VoiceFilters(BaseModel):
+    categories: list[str] = []
+    max_price_per_person: float = 0
+    min_rating: float = 0
+    distance_minutes: float = 0
+    vibe_keywords: list[str] = []
+    party_size: int = 2
+    keywords: list[str] = []
+
+
+class VoiceSearchResponse(BaseModel):
+    transcript: str
+    filters: VoiceFilters
+    restaurants: list[PlaceRestaurant]
+    audio_base64: str
+
+
+@app.post("/api/voice-search", response_model=VoiceSearchResponse)
+async def voice_search(
+    audio: UploadFile = File(...),
+    user_lat: float = Form(42.355),
+    user_lng: float = Form(-71.058),
+):
+    """Full pipeline: ElevenLabs STT → Ollama LLM filter extraction → Places search → filter → ElevenLabs TTS."""
+
+    # ── Step 1: ElevenLabs STT ────────────────────────────────────────────────
+    raw_audio = await audio.read()
+    transcript = ""
+
+    if ELEVENLABS_API_KEY and raw_audio:
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.post(
+                    "https://api.elevenlabs.io/v1/speech-to-text",
+                    headers={"xi-api-key": ELEVENLABS_API_KEY},
+                    files={"file": (audio.filename or "audio.webm", raw_audio, audio.content_type or "audio/webm")},
+                    data={"model_id": "scribe_v1"},
+                    timeout=30,
+                )
+                r.raise_for_status()
+                transcript = r.json().get("text", "")
+        except Exception as e:
+            print(f"[voice] STT error: {e}")
+
+    if not transcript:
+        return VoiceSearchResponse(transcript="", filters=VoiceFilters(), restaurants=[], audio_base64="")
+
+    # ── Step 2: LLM → structured filters ─────────────────────────────────────
+    filters = VoiceFilters()
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model": MODEL,
+                    "prompt": transcript,
+                    "system": VOICE_QUERY_PROMPT,
+                    "stream": False,
+                    "options": {"temperature": 0.1, "num_predict": 300},
+                },
+                timeout=30,
+            )
+            r.raise_for_status()
+        raw = r.json()["response"].strip()
+        if "```" in raw:
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        filters = VoiceFilters(**json.loads(raw))
+    except Exception as e:
+        print(f"[voice] LLM filter error: {e}")
+
+    # ── Step 3: Fetch restaurants near user ───────────────────────────────────
+    all_places = await get_restaurants(lat=user_lat, lng=user_lng)
+
+    # ── Step 4: Apply filters ─────────────────────────────────────────────────
+    matched: list[PlaceRestaurant] = []
+    for place in all_places:
+        # Distance
+        if filters.distance_minutes > 0:
+            dist_m   = _haversine_meters(user_lat, user_lng, place.lat, place.lng)
+            walk_min = dist_m / 80  # ~80 m/min walking
+            if walk_min > filters.distance_minutes:
+                continue
+
+        # Price
+        if filters.max_price_per_person > 0:
+            if PRICE_LEVEL_MAX_USD.get(place.priceLevel, 9999) > filters.max_price_per_person:
+                continue
+
+        # Rating
+        if filters.min_rating > 0 and place.rating < filters.min_rating:
+            continue
+
+        # Category
+        if filters.categories and place.category not in filters.categories:
+            continue
+
+        # Vibe keyword match against description + top review
+        if filters.vibe_keywords:
+            blob = (place.description + " " + place.topReview).lower()
+            if not any(kw.lower() in blob for kw in filters.vibe_keywords):
+                continue
+
+        matched.append(place)
+
+    # Sort matched by rating desc
+    matched.sort(key=lambda x: x.rating, reverse=True)
+
+    # ── Step 5: TTS response ──────────────────────────────────────────────────
+    if matched:
+        top = matched[:3]
+        names = ", ".join(r.name for r in top)
+        extra = f" 외 {len(matched) - 3}곳" if len(matched) > 3 else ""
+        response_text = (
+            f"조건에 맞는 식당이 {len(matched)}곳 있습니다. "
+            f"추천 순위: {names}{extra}. "
+            f"지도에서 확인해보세요!"
+        )
+    else:
+        response_text = "조건에 맞는 식당을 찾지 못했습니다. 조건을 조금 완화해보세요."
+
+    audio_base64 = ""
+    if ELEVENLABS_API_KEY:
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.post(
+                    f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}",
+                    headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+                    json={
+                        "text": response_text,
+                        "model_id": "eleven_turbo_v2_5",
+                        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+                    },
+                    timeout=30,
+                )
+                if r.status_code == 200:
+                    audio_base64 = base64.b64encode(r.content).decode()
+        except Exception as e:
+            print(f"[voice] TTS error: {e}")
+
+    return VoiceSearchResponse(
+        transcript=transcript,
+        filters=filters,
+        restaurants=matched,
+        audio_base64=audio_base64,
+    )
 
 
 if __name__ == "__main__":
