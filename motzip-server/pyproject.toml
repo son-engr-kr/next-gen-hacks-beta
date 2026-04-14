@@ -9,4 +9,5 @@ dependencies = [
     "python-multipart==0.0.20",
     "uvicorn==0.34.2",
     "twilio>=9.0.0",
+    "python-dotenv>=1.0.0",
 ]

@@ -42,20 +42,29 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+
+      // Pick best supported format
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : "audio/ogg;codecs=opus";
+
+      const recorder = new MediaRecorder(stream, { mimeType });
       mediaRef.current = recorder;
 
+      // timeslice=200ms 로 chunk 단위 수집 — 짧은 녹음도 안전
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data);
       };
 
       recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-        await submitAudio(blob);
+        const blob = new Blob(chunksRef.current, { type: mimeType });
+        await submitAudio(blob, mimeType);
       };
 
-      recorder.start();
+      recorder.start(200);
     } catch {
       setErrorMsg("마이크 접근이 거부됐어요. 브라우저 설정을 확인해주세요.");
       setPhase("error");
@@ -69,11 +78,12 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
     }
   }, []);
 
-  const submitAudio = async (blob: Blob) => {
+  const submitAudio = async (blob: Blob, mimeType: string) => {
     setPhase("processing");
+    const ext = mimeType.includes("ogg") ? "ogg" : "webm";
     try {
       const form = new FormData();
-      form.append("audio", blob, "voice.webm");
+      form.append("audio", blob, `voice.${ext}`);
       form.append("user_lat", String(userLat));
       form.append("user_lng", String(userLng));
 

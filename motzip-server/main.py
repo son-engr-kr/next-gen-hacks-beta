@@ -12,6 +12,8 @@ import json
 import math
 import os
 import sys
+from dotenv import load_dotenv
+load_dotenv()
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, UploadFile, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,7 +29,7 @@ TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_PHONE_NUMBER  = os.getenv("TWILIO_PHONE_NUMBER", "")
 NGROK_URL            = os.getenv("NGROK_URL", "http://localhost:8000")
-MODEL = os.getenv("MOTZIP_MODEL", "gemma4:e4b-it-q4_K_M")
+MODEL = os.getenv("MOTZIP_MODEL", "gemma3:4b")
 OLLAMA_POLL_INTERVAL_SECONDS = 2
 
 
@@ -60,10 +62,11 @@ async def wait_for_ollama() -> None:
             models = [m["name"] for m in r.json().get("models", [])]
             if MODEL not in models:
                 print()
-                print(f"[motzip-server] ERROR: model '{MODEL}' is not installed in Ollama.")
-                print(f"[motzip-server] Fix it with: ollama pull {MODEL}")
+                print(f"[motzip-server] WARNING: model '{MODEL}' not found in Ollama.")
                 print(f"[motzip-server] Available models: {models or '(none)'}")
-                sys.exit(1)
+                print(f"[motzip-server] Run: ollama pull {MODEL}")
+                print(f"[motzip-server] Keyword fallback will be used for voice search.")
+                return
 
             print(f"[motzip-server] Ollama OK. Using model: {MODEL}")
             return
@@ -607,7 +610,12 @@ Respond ONLY with a valid JSON object (no markdown):
   "distance_minutes": 0,
   "vibe_keywords": [],
   "party_size": 2,
-  "keywords": []
+  "keywords": [],
+  "requires_parking": false,
+  "requires_wheelchair": false,
+  "requires_dogs": false,
+  "requires_cocktails": false,
+  "requires_live_music": false
 }
 
 Field rules:
@@ -617,7 +625,12 @@ Field rules:
 - distance_minutes: max walking minutes, 0 = no limit
 - vibe_keywords: atmosphere tags like "romantic", "date night", "quiet", "cozy", "lively", "upscale", "casual"
 - party_size: number of diners
-- keywords: any other terms"""
+- keywords: any other terms
+- requires_parking: true if user mentions parking (주차, parking, 차)
+- requires_wheelchair: true if user mentions wheelchair or accessibility (휠체어, 장애인)
+- requires_dogs: true if user mentions dogs/pets (강아지, 반려견, pet)
+- requires_cocktails: true if user mentions cocktails/alcohol (칵테일, 술, cocktail)
+- requires_live_music: true if user mentions live music (라이브, 공연, live music)"""
 
 
 def _haversine_meters(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -637,6 +650,11 @@ class VoiceFilters(BaseModel):
     vibe_keywords: list[str] = []
     party_size: int = 2
     keywords: list[str] = []
+    requires_parking: bool = False
+    requires_wheelchair: bool = False
+    requires_dogs: bool = False
+    requires_cocktails: bool = False
+    requires_live_music: bool = False
 
 
 class VoiceSearchResponse(BaseModel):
@@ -668,15 +686,17 @@ async def voice_search(
                     data={"model_id": "scribe_v1"},
                     timeout=30,
                 )
-                r.raise_for_status()
-                transcript = r.json().get("text", "")
+                if r.status_code == 200:
+                    transcript = r.json().get("text", "")
+                else:
+                    print(f"[voice] STT error {r.status_code}: {r.text}")
         except Exception as e:
             print(f"[voice] STT error: {e}")
 
     if not transcript:
         return VoiceSearchResponse(transcript="", filters=VoiceFilters(), restaurants=[], audio_base64="")
 
-    # ── Step 2: LLM → structured filters ─────────────────────────────────────
+    # ── Step 2: LLM → structured filters (with keyword fallback) ─────────────
     filters = VoiceFilters()
     try:
         async with httpx.AsyncClient() as client:
@@ -689,7 +709,7 @@ async def voice_search(
                     "stream": False,
                     "options": {"temperature": 0.1, "num_predict": 300},
                 },
-                timeout=30,
+                timeout=10,
             )
             r.raise_for_status()
         raw = r.json()["response"].strip()
@@ -698,8 +718,19 @@ async def voice_search(
             if raw.startswith("json"):
                 raw = raw[4:]
         filters = VoiceFilters(**json.loads(raw))
+        print(f"[voice] LLM filters: {filters}")
     except Exception as e:
-        print(f"[voice] LLM filter error: {e}")
+        print(f"[voice] LLM unavailable ({e}), using keyword fallback")
+        # Keyword-based fallback — works without Ollama
+        t = transcript.lower()
+        filters = VoiceFilters(
+            requires_parking=any(w in t for w in ["주차", "parking", "차 가지고", "차로"]),
+            requires_wheelchair=any(w in t for w in ["휠체어", "장애인", "wheelchair", "accessible"]),
+            requires_dogs=any(w in t for w in ["강아지", "반려견", "dog", "pet"]),
+            requires_cocktails=any(w in t for w in ["칵테일", "cocktail", "술", "bar"]),
+            requires_live_music=any(w in t for w in ["라이브", "공연", "live music", "band"]),
+            min_rating=4.0 if any(w in t for w in ["맛있", "좋은", "훌륭", "최고", "good", "great", "best"]) else 0,
+        )
 
     # ── Step 3: Fetch restaurants near user ───────────────────────────────────
     all_places = await get_restaurants(lat=user_lat, lng=user_lng)
@@ -732,6 +763,26 @@ async def voice_search(
             blob = (place.description + " " + place.topReview).lower()
             if not any(kw.lower() in blob for kw in filters.vibe_keywords):
                 continue
+
+        # Parking
+        if filters.requires_parking and not place.parkingType:
+            continue
+
+        # Wheelchair
+        if filters.requires_wheelchair and not place.isWheelchairAccessible:
+            continue
+
+        # Dogs
+        if filters.requires_dogs and not place.allowsDogs:
+            continue
+
+        # Cocktails
+        if filters.requires_cocktails and not place.servesCocktails:
+            continue
+
+        # Live music
+        if filters.requires_live_music and not place.hasLiveMusic:
+            continue
 
         matched.append(place)
 
