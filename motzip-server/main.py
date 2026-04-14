@@ -21,6 +21,12 @@ import httpx
 OLLAMA_URL = "http://localhost:11434"
 ELEVENLABS_API_KEY  = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")  # Sarah
+
+# Twilio credentials
+TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_PHONE_NUMBER  = os.getenv("TWILIO_PHONE_NUMBER", "")
+NGROK_URL            = os.getenv("NGROK_URL", "http://localhost:8000")
 MODEL = os.getenv("MOTZIP_MODEL", "gemma4:e4b-it-q4_K_M")
 OLLAMA_POLL_INTERVAL_SECONDS = 2
 
@@ -140,6 +146,7 @@ class PlaceRestaurant(BaseModel):
     allowsDogs: bool = False
     servesCocktails: bool = False
     priceLevel: str | None = None
+    phone: str | None = None
 
 
 def _map_types_to_category(types: list[str]) -> str:
@@ -179,6 +186,7 @@ async def get_restaurants(
         "places.allowsDogs",
         "places.servesCocktails",
         "places.priceLevel",
+        "places.nationalPhoneNumber",
     ])
 
     # Three groups so each request returns distinct cuisine clusters
@@ -312,6 +320,7 @@ async def get_restaurants(
             allowsDogs=allows_dogs,
             servesCocktails=serves_cocktails,
             priceLevel=price_level,
+            phone=p.get("nationalPhoneNumber"),
         ))
 
     return results
@@ -766,6 +775,190 @@ async def voice_search(
         filters=filters,
         restaurants=matched,
         audio_base64=audio_base64,
+    )
+
+
+# ── Twilio Reservations ────────────────────────────────────────────────────────
+
+# In-memory call state (production would use Redis / DB)
+_call_state: dict[str, dict] = {}  # call_sid → {restaurant_name, response_text, status}
+
+TWILIO_GATHER_PROMPT = """You are summarizing a restaurant's response about reservations or wait times.
+Extract the key info and respond ONLY with a JSON object:
+{
+  "can_reserve": true,
+  "wait_minutes": 0,
+  "notes": "any additional info the restaurant said"
+}
+- can_reserve: true if they accept reservations or will take your name, false if walk-in only
+- wait_minutes: estimated wait in minutes (0 = unknown or no wait)
+- notes: any useful details"""
+
+
+class CallRestaurantRequest(BaseModel):
+    restaurant_name: str
+    phone: str
+    party_size: int = 2
+    time_preference: str = "as soon as possible"
+
+
+class CallRestaurantResponse(BaseModel):
+    call_sid: str
+    status: str
+
+
+class CallResultResponse(BaseModel):
+    call_sid: str
+    status: str  # "initiated" | "in-progress" | "completed" | "failed"
+    can_reserve: bool | None = None
+    wait_minutes: int | None = None
+    notes: str = ""
+    raw_speech: str = ""
+
+
+@app.post("/api/call-restaurant", response_model=CallRestaurantResponse)
+async def call_restaurant(body: CallRestaurantRequest):
+    """Initiate an outbound Twilio call to a restaurant to ask about availability."""
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN or not TWILIO_PHONE_NUMBER:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail="Twilio credentials not configured")
+
+    from twilio.rest import Client as TwilioClient  # type: ignore
+    client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+    twiml_url = (
+        f"{NGROK_URL}/api/twilio/voice"
+        f"?restaurant_name={body.restaurant_name.replace(' ', '+')}"
+        f"&party_size={body.party_size}"
+        f"&time_preference={body.time_preference.replace(' ', '+')}"
+    )
+
+    call = client.calls.create(
+        to=body.phone,
+        from_=TWILIO_PHONE_NUMBER,
+        url=twiml_url,
+        status_callback=f"{NGROK_URL}/api/twilio/status",
+        status_callback_method="POST",
+        timeout=30,
+    )
+
+    _call_state[call.sid] = {
+        "restaurant_name": body.restaurant_name,
+        "status": "initiated",
+        "can_reserve": None,
+        "wait_minutes": None,
+        "notes": "",
+        "raw_speech": "",
+    }
+
+    return CallRestaurantResponse(call_sid=call.sid, status="initiated")
+
+
+@app.post("/api/twilio/voice")
+async def twilio_voice(
+    restaurant_name: str = "the restaurant",
+    party_size: int = 2,
+    time_preference: str = "as soon as possible",
+):
+    """TwiML handler — called by Twilio when the restaurant picks up."""
+    from fastapi.responses import PlainTextResponse
+
+    greeting = (
+        f"Hello! I'm calling on behalf of a customer who would like to make a reservation "
+        f"or ask about the current wait time for a party of {party_size}, {time_preference}. "
+        f"Could you please let me know if a reservation is available or what the current wait time is?"
+    )
+
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Gather input="speech" action="{NGROK_URL}/api/twilio/gather" method="POST"
+          speechTimeout="auto" timeout="10" language="en-US">
+    <Say voice="Polly.Joanna">{greeting}</Say>
+  </Gather>
+  <Say voice="Polly.Joanna">I did not receive a response. Thank you for your time. Goodbye.</Say>
+</Response>"""
+
+    return PlainTextResponse(content=twiml, media_type="application/xml")
+
+
+@app.post("/api/twilio/gather")
+async def twilio_gather(
+    CallSid: str = Form(""),
+    SpeechResult: str = Form(""),
+):
+    """Twilio posts here after gathering the restaurant's speech response."""
+    from fastapi.responses import PlainTextResponse
+
+    raw_speech = SpeechResult.strip()
+    call_info = _call_state.get(CallSid, {})
+    call_info["raw_speech"] = raw_speech
+    call_info["status"] = "completed"
+
+    # Parse the restaurant's response with LLM
+    parsed = {"can_reserve": None, "wait_minutes": 0, "notes": raw_speech}
+    if raw_speech:
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.post(
+                    f"{OLLAMA_URL}/api/generate",
+                    json={
+                        "model": MODEL,
+                        "prompt": raw_speech,
+                        "system": TWILIO_GATHER_PROMPT,
+                        "stream": False,
+                        "options": {"temperature": 0.1, "num_predict": 200},
+                    },
+                    timeout=20,
+                )
+                r.raise_for_status()
+            raw = r.json()["response"].strip()
+            if "```" in raw:
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            parsed = json.loads(raw)
+        except Exception as e:
+            print(f"[twilio] LLM parse error: {e}")
+
+    call_info["can_reserve"] = parsed.get("can_reserve")
+    call_info["wait_minutes"] = int(parsed.get("wait_minutes") or 0)
+    call_info["notes"] = parsed.get("notes", raw_speech)
+    _call_state[CallSid] = call_info
+
+    farewell = "Thank you so much for the information! Have a great day. Goodbye."
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">{farewell}</Say>
+  <Hangup/>
+</Response>"""
+
+    return PlainTextResponse(content=twiml, media_type="application/xml")
+
+
+@app.post("/api/twilio/status")
+async def twilio_status(CallSid: str = Form(""), CallStatus: str = Form("")):
+    """Twilio status callback to track call lifecycle."""
+    if CallSid in _call_state:
+        if CallStatus in ("failed", "busy", "no-answer", "canceled"):
+            _call_state[CallSid]["status"] = CallStatus
+    return {"ok": True}
+
+
+@app.get("/api/call-result/{call_sid}", response_model=CallResultResponse)
+async def call_result(call_sid: str):
+    """Poll for the result of a Twilio call."""
+    info = _call_state.get(call_sid)
+    if not info:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Call not found")
+
+    return CallResultResponse(
+        call_sid=call_sid,
+        status=info.get("status", "initiated"),
+        can_reserve=info.get("can_reserve"),
+        wait_minutes=info.get("wait_minutes"),
+        notes=info.get("notes", ""),
+        raw_speech=info.get("raw_speech", ""),
     )
 
 

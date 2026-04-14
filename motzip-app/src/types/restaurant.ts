@@ -17,6 +17,7 @@ export interface Restaurant {
   allowsDogs?: boolean;
   servesCocktails?: boolean;
   priceLevel?: "FREE" | "INEXPENSIVE" | "MODERATE" | "EXPENSIVE" | "VERY_EXPENSIVE" | null;
+  phone?: string | null;
 }
 
 export type Category =

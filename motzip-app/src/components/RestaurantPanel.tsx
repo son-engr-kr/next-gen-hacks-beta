@@ -1,6 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import { Restaurant, categoryEmoji } from "@/types/restaurant";
+
+const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:8000";
 
 interface Props {
   restaurant: Restaurant;
@@ -42,7 +45,67 @@ function StatCard({ value, label, gradient }: { value: string; label: string; gr
   );
 }
 
+type CallPhase = "idle" | "calling" | "done" | "error";
+
+interface CallResult {
+  can_reserve: boolean | null;
+  wait_minutes: number | null;
+  notes: string;
+  raw_speech: string;
+}
+
 export default function RestaurantPanel({ restaurant, onClose }: Props) {
+  const [callPhase, setCallPhase] = useState<CallPhase>("idle");
+  const [callResult, setCallResult] = useState<CallResult | null>(null);
+  const [callError, setCallError] = useState("");
+
+  const handleCall = async () => {
+    if (!restaurant.phone) return;
+    setCallPhase("calling");
+    setCallResult(null);
+    setCallError("");
+
+    try {
+      // Initiate call
+      const res = await fetch(`${SERVER_URL}/api/call-restaurant`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          restaurant_name: restaurant.name,
+          phone: restaurant.phone,
+          party_size: 2,
+          time_preference: "as soon as possible",
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const { call_sid } = await res.json();
+
+      // Poll for result (max 45s)
+      const deadline = Date.now() + 45_000;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const poll = await fetch(`${SERVER_URL}/api/call-result/${call_sid}`);
+        if (!poll.ok) continue;
+        const data = await poll.json();
+        if (data.status === "completed") {
+          setCallResult(data);
+          setCallPhase("done");
+          return;
+        }
+        if (["failed", "busy", "no-answer", "canceled"].includes(data.status)) {
+          setCallError(`통화 실패: ${data.status}`);
+          setCallPhase("error");
+          return;
+        }
+      }
+      setCallError("응답 시간 초과");
+      setCallPhase("error");
+    } catch (e) {
+      setCallError(e instanceof Error ? e.message : "오류 발생");
+      setCallPhase("error");
+    }
+  };
+
   return (
     <div className="absolute right-3 top-3 bottom-3 w-[340px] z-30 animate-slide-in">
       <div className="h-full bg-gray-950/80 backdrop-blur-2xl rounded-3xl border border-white/[0.06] text-white flex flex-col overflow-hidden shadow-2xl shadow-black/50">
@@ -105,6 +168,61 @@ export default function RestaurantPanel({ restaurant, onClose }: Props) {
               gradient="from-sky-300 to-blue-400"
             />
           </div>
+
+          {/* Twilio Call section */}
+          {restaurant.phone && (
+            <div className="pt-1">
+              <button
+                onClick={handleCall}
+                disabled={callPhase === "calling"}
+                className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-2xl text-sm font-semibold transition-all
+                  ${callPhase === "calling"
+                    ? "bg-violet-900/40 border border-violet-500/20 text-violet-400 cursor-wait"
+                    : callPhase === "done"
+                    ? "bg-emerald-900/40 border border-emerald-500/20 text-emerald-300"
+                    : callPhase === "error"
+                    ? "bg-rose-900/40 border border-rose-500/20 text-rose-300"
+                    : "bg-violet-900/40 border border-violet-500/20 text-violet-300 hover:bg-violet-800/40 hover:text-violet-200"
+                  }`}
+              >
+                {callPhase === "calling" && (
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                  </svg>
+                )}
+                {callPhase === "idle" && <span>&#128222;</span>}
+                {callPhase === "idle" && " 예약 / 대기시간 전화 문의"}
+                {callPhase === "calling" && " 전화 중..."}
+                {callPhase === "done" && " 통화 완료"}
+                {callPhase === "error" && " 통화 실패"}
+              </button>
+
+              {callError && (
+                <p className="text-rose-400 text-[11px] mt-1.5 text-center">{callError}</p>
+              )}
+
+              {callResult && (
+                <div className="mt-2 rounded-2xl bg-white/[0.03] border border-white/[0.05] p-3 space-y-1.5 text-[12px]">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${callResult.can_reserve ? "bg-emerald-400" : "bg-rose-400"}`} />
+                    <span className="text-gray-300 font-medium">
+                      {callResult.can_reserve ? "예약 가능" : "예약 불가 (워크인)"}
+                    </span>
+                    {callResult.wait_minutes != null && callResult.wait_minutes > 0 && (
+                      <span className="ml-auto text-amber-300 font-semibold">~{callResult.wait_minutes}분 대기</span>
+                    )}
+                    {callResult.wait_minutes === 0 && callResult.can_reserve && (
+                      <span className="ml-auto text-emerald-300 font-semibold">대기 없음</span>
+                    )}
+                  </div>
+                  {callResult.notes && (
+                    <p className="text-gray-400 leading-relaxed">{callResult.notes}</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Bottom accent */}
