@@ -102,15 +102,6 @@ function getBuildingTier(reviewCount: number, rating: number): "landmark" | "maj
   return "regular";
 }
 
-function getBuildingTopZ(r: Restaurant, s: number): number {
-  const tier = getBuildingTier(r.reviewCount, r.rating);
-  switch (tier) {
-    case "landmark": return r.reviewCount * 1.2 * s;
-    case "major":    return r.reviewCount * 0.9 * s;
-    case "mid":      return r.reviewCount * 0.7 * s;
-    default:         return Math.max(30, r.reviewCount * 0.6) * s;
-  }
-}
 
 function makeWallMat(texture: THREE.CanvasTexture, rating: number, metalBoost = 0) {
   return new THREE.MeshStandardMaterial({
@@ -473,7 +464,8 @@ export function createBuildingCustomLayer(
     const SIZE = 14 * s;
     const FLOAT_GAP = 6 * s;
 
-    for (const r of restaurants) {
+    for (let i = 0; i < restaurants.length; i++) {
+      const r = restaurants[i];
       const template = food[r.category];
       if (!template) continue;
 
@@ -481,15 +473,17 @@ export function createBuildingCustomLayer(
       const tier = getBuildingTier(r.reviewCount, r.rating);
       if (tier === "landmark" && buildings?.[`landmark_${r.category}` as LandmarkModelKey]) continue;
 
+      // Read actual rendered building height (not theoretical target)
+      const actualTopZ = new THREE.Box3().setFromObject(buildingGroups[i]).max.z;
+
       const icon = placeGlbModel(template, SIZE, SIZE);
       const merc = maplibregl.MercatorCoordinate.fromLngLat([r.lng, r.lat], 0);
-      const topZ = getBuildingTopZ(r, s);
 
       const outer = new THREE.Group();
-      outer.position.set(merc.x - refMerc.x, merc.y - refMerc.y, topZ + FLOAT_GAP);
+      outer.position.set(merc.x - refMerc.x, merc.y - refMerc.y, actualTopZ + FLOAT_GAP);
       outer.add(icon);
       scene.add(outer);
-      foodIconGroups.push({ outer, baseZ: topZ + FLOAT_GAP });
+      foodIconGroups.push({ outer, baseZ: actualTopZ + FLOAT_GAP });
     }
   }
 
