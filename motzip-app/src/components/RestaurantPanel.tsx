@@ -205,9 +205,9 @@ export default function RestaurantPanel({ restaurant, onClose }: Props) {
               {callResult && (
                 <div className="mt-2 rounded-2xl bg-white/[0.03] border border-white/[0.05] p-3 space-y-1.5 text-[12px]">
                   <div className="flex items-center gap-2">
-                    <span className={`w-2 h-2 rounded-full ${callResult.can_reserve ? "bg-emerald-400" : "bg-rose-400"}`} />
+                    <span className={`w-2 h-2 rounded-full ${callResult.can_reserve === true ? "bg-emerald-400" : callResult.can_reserve === false ? "bg-rose-400" : "bg-gray-500"}`} />
                     <span className="text-gray-300 font-medium">
-                      {callResult.can_reserve ? "예약 가능" : "예약 불가 (워크인)"}
+                      {callResult.can_reserve === true ? "예약 가능" : callResult.can_reserve === false ? "예약 불가 (워크인)" : "예약 정보 불명확"}
                     </span>
                     {callResult.wait_minutes != null && callResult.wait_minutes > 0 && (
                       <span className="ml-auto text-amber-300 font-semibold">~{callResult.wait_minutes}분 대기</span>

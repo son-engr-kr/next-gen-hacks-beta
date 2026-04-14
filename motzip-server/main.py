@@ -29,6 +29,7 @@ TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_PHONE_NUMBER  = os.getenv("TWILIO_PHONE_NUMBER", "")
 NGROK_URL            = os.getenv("NGROK_URL", "http://localhost:8000")
+TWILIO_TEST_TO       = os.getenv("TWILIO_TEST_TO", "")  # override 'to' number for trial testing
 MODEL = os.getenv("MOTZIP_MODEL", "gemma3:4b")
 OLLAMA_POLL_INTERVAL_SECONDS = 2
 
@@ -884,8 +885,9 @@ async def call_restaurant(body: CallRestaurantRequest):
         f"&time_preference={body.time_preference.replace(' ', '+')}"
     )
 
+    to_number = TWILIO_TEST_TO if TWILIO_TEST_TO else body.phone
     call = client.calls.create(
-        to=body.phone,
+        to=to_number,
         from_=TWILIO_PHONE_NUMBER,
         url=twiml_url,
         status_callback=f"{NGROK_URL}/api/twilio/status",
@@ -923,7 +925,7 @@ async def twilio_voice(
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Gather input="speech" action="{NGROK_URL}/api/twilio/gather" method="POST"
-          speechTimeout="auto" timeout="10" language="en-US">
+          speechTimeout="auto" timeout="10" language="en-US ko-KR">
     <Say voice="Polly.Joanna">{greeting}</Say>
   </Gather>
   <Say voice="Polly.Joanna">I did not receive a response. Thank you for your time. Goodbye.</Say>
@@ -941,6 +943,7 @@ async def twilio_gather(
     from fastapi.responses import PlainTextResponse
 
     raw_speech = SpeechResult.strip()
+    print(f"[twilio] gather received — CallSid={CallSid}, SpeechResult={repr(raw_speech)}")
     call_info = _call_state.get(CallSid, {})
     call_info["raw_speech"] = raw_speech
     call_info["status"] = "completed"
