@@ -316,10 +316,15 @@ function createTrendingBeacon(topZ: number, s: number): THREE.Group {
 
 // ── Custom layer export ────────────────────────────────────────────────────────
 
+export interface BuildingLayerHandle {
+  layer: maplibregl.CustomLayerInterface;
+  setFilter: (ids: Set<string> | null) => void;
+}
+
 export function createBuildingCustomLayer(
   map: maplibregl.Map,
   restaurants: Restaurant[]
-): maplibregl.CustomLayerInterface {
+): BuildingLayerHandle {
   let renderer: THREE.WebGLRenderer;
   let scene: THREE.Scene;
   let camera: THREE.Camera;
@@ -331,6 +336,12 @@ export function createBuildingCustomLayer(
   let foodIconGroups: { outer: THREE.Group; baseZ: number }[] = [];
   let featureMarkers: FeatureMarker[] = [];
   let trendingBeacons: THREE.Group[] = [];
+
+  // ── Voice filter state ─────────────────────────────────────────────────────
+  let filteredIds: Set<string> | null = null;
+  const targetScales: number[] = [];   // target scale.z per building index
+  const currentScales: number[] = [];  // current animated scale.z
+  let spotlightBeams: THREE.Mesh[] = [];
 
   const buildingTopZMap = new Map<string, number>();
 
@@ -423,6 +434,69 @@ export function createBuildingCustomLayer(
     }
 
     rebuildGroundIndicators();
+
+    // Init scale arrays
+    restaurants.forEach((_, i) => {
+      targetScales[i]  = filteredIds === null ? 1.0 : (filteredIds.has(restaurants[i].id) ? 1.0 : 0.05);
+      currentScales[i] = buildingGroups[i]?.scale.z ?? 1.0;
+    });
+  }
+
+  // ── Spotlight beam helpers ─────────────────────────────────────────────────
+
+  function removeSpotlights() {
+    spotlightBeams.forEach((m) => scene?.remove(m));
+    spotlightBeams = [];
+  }
+
+  function addSpotlight(r: Restaurant, topZ: number) {
+    const merc = maplibregl.MercatorCoordinate.fromLngLat([r.lng, r.lat], 0);
+    const bx = merc.x - refMerc.x;
+    const by = merc.y - refMerc.y;
+    const beamH = topZ + 80 * s;
+
+    // Outer wide cone — soft glow
+    const outerGeo = new THREE.CylinderGeometry(1.5 * s, 18 * s, beamH, 10, 1, true);
+    outerGeo.rotateX(Math.PI / 2);
+    outerGeo.translate(0, 0, beamH / 2);
+    const outer = new THREE.Mesh(outerGeo, new THREE.MeshStandardMaterial({
+      color: "#ffffff", emissive: "#88ccff", emissiveIntensity: 0.8,
+      transparent: true, opacity: 0.10, side: THREE.DoubleSide, depthWrite: false,
+    }));
+    outer.position.set(bx, by, 0);
+    scene.add(outer);
+    spotlightBeams.push(outer);
+
+    // Inner narrow core — bright beam
+    const innerGeo = new THREE.CylinderGeometry(0.4 * s, 6 * s, beamH, 6, 1, true);
+    innerGeo.rotateX(Math.PI / 2);
+    innerGeo.translate(0, 0, beamH / 2);
+    const inner = new THREE.Mesh(innerGeo, new THREE.MeshStandardMaterial({
+      color: "#aaddff", emissive: "#66aaff", emissiveIntensity: 1.5,
+      transparent: true, opacity: 0.28, side: THREE.DoubleSide, depthWrite: false,
+    }));
+    inner.position.set(bx, by, 0);
+    scene.add(inner);
+    spotlightBeams.push(inner);
+  }
+
+  // ── setFilter API ──────────────────────────────────────────────────────────
+
+  function setFilter(ids: Set<string> | null) {
+    filteredIds = ids;
+    removeSpotlights();
+
+    restaurants.forEach((r, i) => {
+      if (ids === null) {
+        targetScales[i] = 1.0;
+      } else if (ids.has(r.id)) {
+        targetScales[i] = 1.0;
+        const topZ = buildingTopZMap.get(r.id) ?? 50 * s;
+        addSpotlight(r, topZ);
+      } else {
+        targetScales[i] = 0.04;
+      }
+    });
   }
 
   function rebuildFoodIcons(food: FoodModels, buildings: BuildingModels | null) {
@@ -450,7 +524,7 @@ export function createBuildingCustomLayer(
 
   // ── Layer interface ────────────────────────────────────────────────────────
 
-  return {
+  const layer: maplibregl.CustomLayerInterface = {
     id: "3d-buildings",
     type: "custom",
     renderingMode: "3d",
@@ -492,6 +566,29 @@ export function createBuildingCustomLayer(
     render(_gl: WebGLRenderingContext, args: any) {
       const t = Date.now() / 1000;
 
+      // ── Voice filter: animate building scale (sink / rise) ─────────────────
+      buildingGroups.forEach((group, i) => {
+        const target  = targetScales[i]  ?? 1.0;
+        const current = currentScales[i] ?? 1.0;
+        const next    = current + (target - current) * 0.08; // smooth lerp
+        currentScales[i] = next;
+        group.scale.z = next;
+        // Fade gem markers for dimmed buildings
+        if (featureMarkers[i]) {
+          const mat = featureMarkers[i].mesh.material as THREE.MeshStandardMaterial;
+          if (mat) mat.opacity = Math.max(0.05, next);
+        }
+      });
+
+      // Pulse spotlight beams
+      spotlightBeams.forEach((mesh, i) => {
+        const mat = mesh.material as THREE.MeshStandardMaterial;
+        if (mat?.transparent) {
+          const base = i % 2 === 0 ? 0.08 : 0.22;
+          mat.opacity = base + Math.sin(t * 2.5 + i * 0.7) * 0.05;
+        }
+      });
+
       // Bob food icons
       foodIconGroups.forEach(({ outer, baseZ }, i) => {
         outer.position.z = baseZ + Math.sin(t * 1.5 + i * 0.8) * 5 * s;
@@ -522,4 +619,6 @@ export function createBuildingCustomLayer(
       map.triggerRepaint();
     },
   };
+
+  return { layer, setFilter };
 }

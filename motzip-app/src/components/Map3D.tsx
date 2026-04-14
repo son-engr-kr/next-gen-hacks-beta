@@ -46,6 +46,7 @@ const DEFAULT_CENTER: [number, number] = [-71.058, 42.355];
 export default function Map3D() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  const setFilterRef = useRef<((ids: Set<string> | null) => void) | null>(null);
   const [selected, setSelected] = useState<Restaurant | null>(null);
   const [trendingScreenPositions, setTrendingScreenPositions] = useState<
     { x: number; y: number }[]
@@ -106,6 +107,16 @@ export default function Map3D() {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Apply voice filter to 3D buildings
+  useEffect(() => {
+    if (!setFilterRef.current) return;
+    if (voiceResults === null) {
+      setFilterRef.current(null);
+    } else {
+      setFilterRef.current(new Set(voiceResults.map((r) => r.id)));
+    }
+  }, [voiceResults]);
+
   const trendingRestaurants = restaurants.filter((r) => r.isTrending);
 
   useEffect(() => {
@@ -162,7 +173,8 @@ export default function Map3D() {
 
     map.on("load", () => {
       // Three.js custom layer for 3D buildings with textures
-      const buildingLayer = createBuildingCustomLayer(map, restaurants);
+      const { layer: buildingLayer, setFilter } = createBuildingCustomLayer(map, restaurants);
+      setFilterRef.current = setFilter;
       map.addLayer(buildingLayer);
 
       // Invisible fill-extrusion for click hit-testing
