@@ -82,25 +82,22 @@ function ratingToColor(rating: number): THREE.Color {
 const REF_LNG = -71.058;
 const REF_LAT = 42.355;
 
-/**
- * Coordinate system in this layer (matches MapLibre Mercator space directly):
- *   X = Mercator X (east-west)
- *   Y = Mercator Y (north-south, south is +Y)
- *   Z = altitude (up)
- *
- * All positions are in Mercator units relative to refMerc.
- * Geometry heights extend along Z.
- */
-
 // Building tier based on review count AND rating
 function getBuildingTier(reviewCount: number, rating: number): "landmark" | "major" | "mid" | "regular" {
-  const score = reviewCount * rating; // composite score
+  const score = reviewCount * rating;
   if (score >= 2000 && rating >= 4.5) return "landmark";
   if (score >= 1500 && rating >= 4.2) return "major";
   if (score >= 700) return "mid";
   return "regular";
 }
 
+function getBuildingBaseW(r: Restaurant, s: number): number {
+  const tier = getBuildingTier(r.reviewCount, r.rating);
+  if (tier === "landmark") return 35 * s;
+  if (tier === "major") return 26 * s;
+  if (tier === "mid") return 18 * s;
+  return (12 + Math.min(r.reviewCount * 0.01, 8)) * s;
+}
 
 function makeWallMat(texture: THREE.CanvasTexture, rating: number, metalBoost = 0) {
   return new THREE.MeshStandardMaterial({
@@ -144,12 +141,9 @@ function addCylinderSection(
   radiusBottom: number, radiusTop: number, h: number, zBase: number,
   mat: THREE.Material, topMat: THREE.Material, segments = 8
 ) {
-  // CylinderGeometry is Y-up in Three.js, rotate to Z-up
   const geo = new THREE.CylinderGeometry(radiusTop, radiusBottom, h, segments);
   geo.rotateX(Math.PI / 2);
   geo.translate(0, 0, zBase + h / 2);
-
-  // Cylinder faces: side, top cap, bottom cap
   const mesh = new THREE.Mesh(geo, [mat, topMat, bottomMat]);
   group.add(mesh);
   return zBase + h;
@@ -164,36 +158,21 @@ type ModelKey = TierModelKey | LandmarkModelKey;
 type BuildingModels = Partial<Record<ModelKey, THREE.Group>>;
 type FoodModels = Partial<Record<Category, THREE.Group>>;
 
-/**
- * Clone a loaded GLB scene, scale it to (targetW × targetW × targetH) Mercator
- * units, and position the bottom face at z=0.
- * MapLibre's projection flips winding order so we apply DoubleSide to all meshes.
- */
 function placeGlbModel(
   template: THREE.Group,
   targetW: number,
   targetH: number,
 ): THREE.Group {
   const clone = template.clone(true);
-
-  // glTF is Y-up; our scene is Z-up — rotate to align (+PI/2: Y→+Z, i.e. up stays up)
   clone.rotation.x = Math.PI / 2;
-
-  // Compute bounds after rotation (Z-up space)
   const box = new THREE.Box3().setFromObject(clone);
   const size = box.getSize(new THREE.Vector3());
-
-  // Uniform scale: fit within targetW × targetW footprint AND targetH height
   const scaleXY = targetW / Math.max(size.x, size.y);
   const scaleZ  = targetH / size.z;
   const sc = Math.min(scaleXY, scaleZ);
   clone.scale.setScalar(sc);
-
-  // Recompute bounds after scaling and lift so bottom sits at z=0
   const box2 = new THREE.Box3().setFromObject(clone);
   clone.position.z = -box2.min.z;
-
-  // Fix culling: MapLibre projection flips winding, use DoubleSide for GLB meshes
   clone.traverse((child) => {
     if ((child as THREE.Mesh).isMesh) {
       const mesh = child as THREE.Mesh;
@@ -205,7 +184,6 @@ function placeGlbModel(
       }
     }
   });
-
   return clone;
 }
 
@@ -382,24 +360,19 @@ const MODEL_KEYS: ModelKey[] = [
 
 async function loadBuildingModels(loader: GLTFLoader): Promise<BuildingModels> {
   const models: BuildingModels = {};
-
   await Promise.allSettled(
     MODEL_KEYS.map(
       (key) =>
         new Promise<void>((resolve) => {
           loader.load(
             `/models/buildings/${key}.glb`,
-            (gltf) => {
-              models[key] = gltf.scene as THREE.Group;
-              resolve();
-            },
+            (gltf) => { models[key] = gltf.scene as THREE.Group; resolve(); },
             undefined,
-            () => resolve(), // missing model: silently fall back to procedural
+            () => resolve(),
           );
         }),
     ),
   );
-
   return models;
 }
 
@@ -416,10 +389,7 @@ async function loadFoodModels(loader: GLTFLoader): Promise<FoodModels> {
         new Promise<void>((resolve) => {
           loader.load(
             `/models/food/${cat}.glb`,
-            (gltf) => {
-              models[cat] = gltf.scene as THREE.Group;
-              resolve();
-            },
+            (gltf) => { models[cat] = gltf.scene as THREE.Group; resolve(); },
             undefined,
             () => resolve(),
           );
@@ -427,6 +397,106 @@ async function loadFoodModels(loader: GLTFLoader): Promise<FoodModels> {
     ),
   );
   return models;
+}
+
+// ── Orbiting icon system ───────────────────────────────────────────────────────
+
+interface OrbitingIcon {
+  mesh: THREE.Sprite;
+  baseX: number;
+  baseY: number;
+  baseZ: number;
+  orbitRadius: number;
+  speed: number;
+  phase: number;
+}
+
+/** Emoji sprite with a colored circle background */
+function createEmojiSprite(emoji: string, bgColor: string): THREE.Sprite {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+
+  ctx.fillStyle = bgColor;
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, size / 2 - 2, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.font = `${Math.floor(size * 0.55)}px serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(emoji, size / 2, size / 2 + 3);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: false,
+    sizeAttenuation: true,
+  });
+  return new THREE.Sprite(material);
+}
+
+/** Parking signpost: vertical pole + colored sign board */
+function createParkingSignpost(parkingType: "free" | "paid" | "valet", s: number): THREE.Group {
+  const group = new THREE.Group();
+
+  // Pole
+  const poleGeo = new THREE.CylinderGeometry(0.4 * s, 0.4 * s, 22 * s, 6);
+  poleGeo.rotateX(Math.PI / 2);
+  poleGeo.translate(0, 0, 11 * s);
+  const poleMat = new THREE.MeshStandardMaterial({
+    color: "#9ca3af", metalness: 0.8, roughness: 0.2, side: THREE.BackSide,
+  });
+  group.add(new THREE.Mesh(poleGeo, poleMat));
+
+  // Sign canvas
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext("2d")!;
+  const colors = { free: "#22c55e", paid: "#3b82f6", valet: "#f59e0b" };
+  const labels = { free: "P", paid: "P$", valet: "V" };
+
+  ctx.fillStyle = colors[parkingType];
+  ctx.beginPath();
+  ctx.roundRect?.(4, 4, 56, 56, 8) ?? ctx.rect(4, 4, 56, 56);
+  ctx.fill();
+
+  ctx.fillStyle = "white";
+  ctx.font = "bold 34px Arial";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(labels[parkingType], 32, 32);
+
+  const signTex = new THREE.CanvasTexture(canvas);
+  const signGeo = new THREE.BoxGeometry(7 * s, 7 * s, 1.5 * s);
+  signGeo.translate(0, 0, 24 * s);
+  group.add(new THREE.Mesh(signGeo, new THREE.MeshStandardMaterial({ map: signTex, side: THREE.DoubleSide })));
+
+  return group;
+}
+
+/** Semi-transparent Saturn-style ring around the building top for wheelchair accessibility */
+function createWheelchairRing(buildingW: number): THREE.Mesh {
+  const radius = buildingW * 1.1;
+  const tube   = buildingW * 0.045;
+  const geo = new THREE.TorusGeometry(radius, tube, 8, 48);
+  // default torus is in XY plane → tilt 35° to look like Saturn rings
+  geo.rotateX(Math.PI / 2);   // now vertical (YZ plane)
+  geo.rotateZ(Math.PI / 5.5); // tilt ~33°
+
+  const mat = new THREE.MeshStandardMaterial({
+    color: "#00bfff",
+    emissive: "#007fff",
+    emissiveIntensity: 0.55,
+    transparent: true,
+    opacity: 0.60,
+    side: THREE.DoubleSide,
+  });
+  return new THREE.Mesh(geo, mat);
 }
 
 // ── Custom layer export ────────────────────────────────────────────────────────
@@ -442,19 +512,135 @@ export function createBuildingCustomLayer(
   const refMerc = maplibregl.MercatorCoordinate.fromLngLat([REF_LNG, REF_LAT], 0);
   const s = refMerc.meterInMercatorCoordinateUnits() * 4;
 
-  // Kept separately so we can swap them out when models finish loading
   let buildingGroups: THREE.Group[] = [];
   let foodIconGroups: { outer: THREE.Group; baseZ: number }[] = [];
+  let orbitingIcons: OrbitingIcon[] = [];
+  let wheelchairRings: { mesh: THREE.Mesh; bx: number; by: number }[] = [];
+  let parkingSignposts: THREE.Group[] = [];
+
+  // Maps restaurant id → building top Z in Mercator units
+  const buildingTopZMap = new Map<string, number>();
+
+  // ── Icon size constants
+  const ICON_SIZE   = 11 * s;  // sprite scale
+  const ORBIT_R_BASE = 28 * s; // default orbit radius
+
+  function rebuildOrbitingIcons() {
+    orbitingIcons.forEach(({ mesh }) => scene.remove(mesh));
+    wheelchairRings.forEach(({ mesh }) => scene.remove(mesh));
+    orbitingIcons = [];
+    wheelchairRings = [];
+
+    restaurants.forEach((r, restaurantIndex) => {
+      const merc = maplibregl.MercatorCoordinate.fromLngLat([r.lng, r.lat], 0);
+      const bx = merc.x - refMerc.x;
+      const by = merc.y - refMerc.y;
+      const topZ = buildingTopZMap.get(r.id) ?? 0;
+
+      let slotIndex = 0;
+
+      const addIcon = (
+        emoji: string,
+        bgColor: string,
+        speed: number,
+        radiusMultiplier = 1,
+      ) => {
+        const sprite = createEmojiSprite(emoji, bgColor);
+        sprite.scale.setScalar(ICON_SIZE);
+        scene.add(sprite);
+        orbitingIcons.push({
+          mesh: sprite,
+          baseX: bx,
+          baseY: by,
+          baseZ: topZ + (18 + slotIndex * 22) * s,
+          orbitRadius: ORBIT_R_BASE * radiusMultiplier,
+          speed,
+          phase: (restaurantIndex * 2.3 + slotIndex * 1.7) % (Math.PI * 2),
+        });
+        slotIndex++;
+      };
+
+      // 🔥 Trending
+      if (r.isTrending) addIcon("🔥", "rgba(220,80,0,0.85)", 1.4);
+
+      // ♿ Wheelchair accessible
+      if (r.isWheelchairAccessible) {
+        addIcon("♿", "rgba(0,140,255,0.85)", 0.65, 1.15);
+
+        // Saturn-style ring around building top
+        const baseW = getBuildingBaseW(r, s);
+        const ring  = createWheelchairRing(baseW);
+        ring.position.set(bx, by, topZ);
+        scene.add(ring);
+        wheelchairRings.push({ mesh: ring, bx, by });
+      }
+
+      // 🎵 Live music
+      if (r.hasLiveMusic) addIcon("🎵", "rgba(140,0,220,0.85)", 1.6, 0.9);
+
+      // 🐕 Dogs allowed
+      if (r.allowsDogs) addIcon("🐕", "rgba(60,180,80,0.85)", 1.0, 1.05);
+
+      // 🍸 Cocktails
+      if (r.servesCocktails) addIcon("🍸", "rgba(200,40,130,0.85)", 1.2, 0.95);
+    });
+  }
+
+  function rebuildParkingSignposts() {
+    parkingSignposts.forEach((g) => scene.remove(g));
+    parkingSignposts = [];
+
+    const OFFSET = 20 * s; // distance from building center
+
+    restaurants.forEach((r) => {
+      if (!r.parkingType) return;
+      const merc = maplibregl.MercatorCoordinate.fromLngLat([r.lng, r.lat], 0);
+      const bx = merc.x - refMerc.x;
+      const by = merc.y - refMerc.y;
+
+      const sign = createParkingSignpost(r.parkingType as "free" | "paid" | "valet", s);
+      sign.position.set(bx + OFFSET, by + OFFSET, 0);
+      scene.add(sign);
+      parkingSignposts.push(sign);
+    });
+  }
 
   function rebuildBuildings(models: BuildingModels | null) {
     buildingGroups.forEach((g) => scene.remove(g));
     buildingGroups = [];
+    buildingTopZMap.clear();
 
     for (const r of restaurants) {
       const g = createBuildingGroup(r, refMerc, s, models);
+
+      // Phase 5: dim closed buildings
+      if (r.isOpenNow === false) {
+        g.traverse((child) => {
+          if ((child as THREE.Mesh).isMesh) {
+            const mesh = child as THREE.Mesh;
+            const dim = (mat: THREE.Material) => {
+              if ((mat as THREE.MeshStandardMaterial).emissiveIntensity !== undefined) {
+                (mat as THREE.MeshStandardMaterial).emissiveIntensity *= 0.3;
+                (mat as THREE.MeshStandardMaterial).color.multiplyScalar(0.6);
+              }
+            };
+            if (Array.isArray(mesh.material)) mesh.material.forEach(dim);
+            else if (mesh.material) dim(mesh.material);
+          }
+        });
+      }
+
       scene.add(g);
       buildingGroups.push(g);
+
+      // Track building top Z for orbiting icons
+      const box = new THREE.Box3().setFromObject(g);
+      buildingTopZMap.set(r.id, box.max.z);
     }
+
+    // Rebuild overlays after buildings
+    rebuildOrbitingIcons();
+    rebuildParkingSignposts();
   }
 
   function rebuildFoodIcons(food: FoodModels, buildings: BuildingModels | null) {
@@ -469,13 +655,10 @@ export function createBuildingCustomLayer(
       const template = food[r.category];
       if (!template) continue;
 
-      // Landmark buildings are already food-shaped — skip redundant icon
       const tier = getBuildingTier(r.reviewCount, r.rating);
       if (tier === "landmark" && buildings?.[`landmark_${r.category}` as LandmarkModelKey]) continue;
 
-      // Read actual rendered building height (not theoretical target)
       const actualTopZ = new THREE.Box3().setFromObject(buildingGroups[i]).max.z;
-
       const icon = placeGlbModel(template, SIZE, SIZE);
       const merc = maplibregl.MercatorCoordinate.fromLngLat([r.lng, r.lat], 0);
 
@@ -495,7 +678,6 @@ export function createBuildingCustomLayer(
     onAdd(_map: maplibregl.Map, gl: WebGLRenderingContext) {
       scene = new THREE.Scene();
 
-      // Lighting — Z is up
       scene.add(new THREE.AmbientLight(0xffffff, 3.0));
 
       const dir = new THREE.DirectionalLight(0xffeedd, 2.5);
@@ -506,7 +688,7 @@ export function createBuildingCustomLayer(
       dir2.position.set(-0.3, 0.5, 0.8);
       scene.add(dir2);
 
-      // First pass: procedural geometry (instant)
+      // First pass: procedural (instant) — also builds orbiting icons
       rebuildBuildings(null);
 
       // Point lights above trending restaurants
@@ -526,12 +708,11 @@ export function createBuildingCustomLayer(
       });
       renderer.autoClear = false;
 
-      // IBL environment — makes PBR (GLB) materials receive light correctly
       const pmrem = new THREE.PMREMGenerator(renderer);
       scene.environment = pmrem.fromScene(new RoomEnvironment()).texture;
       pmrem.dispose();
 
-      // Second pass: upgrade to GLB models when they finish loading
+      // Second pass: GLB models when ready
       const draco = new DRACOLoader();
       draco.setDecoderPath("/draco/");
       const loader = new GLTFLoader();
@@ -539,7 +720,7 @@ export function createBuildingCustomLayer(
       Promise.all([loadBuildingModels(loader), loadFoodModels(loader)]).then(
         ([buildings, food]) => {
           if (Object.keys(buildings).length > 0) {
-            rebuildBuildings(buildings);
+            rebuildBuildings(buildings); // also rebuilds orbiting icons
           }
           if (Object.keys(food).length > 0) {
             rebuildFoodIcons(food, buildings);
@@ -552,8 +733,24 @@ export function createBuildingCustomLayer(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     render(_gl: WebGLRenderingContext, args: any) {
       const t = Date.now() / 1000;
+
+      // Bob food icons
       foodIconGroups.forEach(({ outer, baseZ }, i) => {
         outer.position.z = baseZ + Math.sin(t * 1.5 + i * 0.8) * 5 * s;
+      });
+
+      // Orbit emoji icons
+      orbitingIcons.forEach((icon) => {
+        const angle = t * icon.speed + icon.phase;
+        icon.mesh.position.x = icon.baseX + Math.cos(angle) * icon.orbitRadius;
+        icon.mesh.position.y = icon.baseY + Math.sin(angle) * icon.orbitRadius;
+        // Slight vertical bob
+        icon.mesh.position.z = icon.baseZ + Math.sin(t * 0.8 + icon.phase) * 4 * s;
+      });
+
+      // Slowly spin wheelchair rings
+      wheelchairRings.forEach(({ mesh }) => {
+        mesh.rotation.z += 0.004;
       });
 
       const m = new THREE.Matrix4().fromArray(args.defaultProjectionData.mainMatrix);

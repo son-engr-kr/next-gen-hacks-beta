@@ -9,6 +9,14 @@ export interface Restaurant {
   isTrending: boolean;
   description: string;
   topReview: string;
+  // Google Places enrichment — absent in static demo data
+  isWheelchairAccessible?: boolean;
+  parkingType?: "free" | "paid" | "valet" | null;
+  isOpenNow?: boolean | null;
+  hasLiveMusic?: boolean;
+  allowsDogs?: boolean;
+  servesCocktails?: boolean;
+  priceLevel?: "FREE" | "INEXPENSIVE" | "MODERATE" | "EXPENSIVE" | "VERY_EXPENSIVE" | null;
 }
 
 export type Category =

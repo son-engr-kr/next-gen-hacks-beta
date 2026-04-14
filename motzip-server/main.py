@@ -62,7 +62,9 @@ async def wait_for_ollama() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await wait_for_ollama()
+    # Ollama is only needed for LLM endpoints (/api/search, /api/summarize, etc.)
+    # /api/restaurants (Google Places) works without Ollama, so we don't block startup.
+    asyncio.create_task(wait_for_ollama())
     yield
 
 
@@ -128,6 +130,13 @@ class PlaceRestaurant(BaseModel):
     isTrending: bool
     description: str
     topReview: str
+    isWheelchairAccessible: bool = False
+    parkingType: str | None = None
+    isOpenNow: bool | None = None
+    hasLiveMusic: bool = False
+    allowsDogs: bool = False
+    servesCocktails: bool = False
+    priceLevel: str | None = None
 
 
 def _map_types_to_category(types: list[str]) -> str:
@@ -169,6 +178,13 @@ async def get_restaurants(
         "places.userRatingCount",
         "places.editorialSummary",
         "places.reviews",
+        "places.accessibilityOptions",
+        "places.parkingOptions",
+        "places.currentOpeningHours",
+        "places.liveMusic",
+        "places.allowsDogs",
+        "places.servesCocktails",
+        "places.priceLevel",
     ])
 
     async with httpx.AsyncClient() as client:
@@ -209,6 +225,45 @@ async def get_restaurants(
         avg_count = sum(pl.get("userRatingCount", 0) for pl in places) / max(len(places), 1)
         is_trending = rating >= 4.3 and review_count >= avg_count * 1.5
 
+        # Accessibility
+        accessibility = p.get("accessibilityOptions") or {}
+        is_wheelchair = bool(
+            accessibility.get("wheelchairAccessibleEntrance")
+            or accessibility.get("wheelchairAccessibleSeating")
+            or accessibility.get("wheelchairAccessibleRestroom")
+        )
+
+        # Parking
+        parking_opts = p.get("parkingOptions") or {}
+        has_valet = bool(parking_opts.get("valetParking"))
+        has_free = bool(
+            parking_opts.get("freeParkingLot")
+            or parking_opts.get("freeStreetParking")
+            or parking_opts.get("freeGarageParking")
+        )
+        has_paid = bool(
+            parking_opts.get("paidParkingLot")
+            or parking_opts.get("paidGarageParking")
+        )
+        if has_valet:
+            parking_type = "valet"
+        elif has_free:
+            parking_type = "free"
+        elif has_paid:
+            parking_type = "paid"
+        else:
+            parking_type = None
+
+        # Opening hours
+        opening_hours = p.get("currentOpeningHours") or {}
+        is_open_now = opening_hours.get("openNow")  # True / False / None
+
+        # Amenities
+        has_live_music = bool(p.get("liveMusic"))
+        allows_dogs = bool(p.get("allowsDogs"))
+        serves_cocktails = bool(p.get("servesCocktails"))
+        price_level = p.get("priceLevel")  # e.g. "MODERATE"
+
         results.append(PlaceRestaurant(
             id=p.get("id", f"place_{len(results)}"),
             name=p.get("displayName", {}).get("text", "Unknown"),
@@ -220,6 +275,13 @@ async def get_restaurants(
             isTrending=is_trending,
             description=description,
             topReview=top_review,
+            isWheelchairAccessible=is_wheelchair,
+            parkingType=parking_type,
+            isOpenNow=is_open_now,
+            hasLiveMusic=has_live_music,
+            allowsDogs=allows_dogs,
+            servesCocktails=serves_cocktails,
+            priceLevel=price_level,
         ))
 
     return results
