@@ -2,26 +2,29 @@
 
 Use these with `generate.py --type food` or `--type building`.
 
+**Style guide**: low-poly, bright saturated colors, flat shading, plastic toy feel.
+Think mobile game icons — clean silhouette, no background clutter.
+
 ---
 
 ## Food Icons  (`--type food`)
 
-Floating icons above each building.
+Floating icons above each building. **Food only** — no plates, no tables, no utensils unless integral (e.g. bowl for ramen).
 
 | category | prompt |
 |----------|--------|
-| burger | cute miniature hamburger, isometric, stylized game asset, soft pastel colors |
-| pizza | cute pizza slice with melted cheese, miniature, cartoon style, game asset |
-| sushi | kawaii sushi platter with nigiri and maki rolls, miniature, stylized |
-| ramen | cute steaming ramen bowl with chopsticks, miniature, cartoon game asset |
-| cafe | cute coffee cup with latte art and steam, miniature, isometric game asset |
-| mexican | cute taco with toppings, miniature, colorful cartoon style, game asset |
-| italian | cute pasta bowl with spaghetti and meatball, miniature, cartoon style |
-| chinese | cute dim sum bamboo steamer, miniature, isometric, game asset |
-| thai | cute thai curry bowl with jasmine rice, miniature, stylized game asset |
-| steakhouse | cute grilled steak on plate, miniature, cartoon style, game asset |
-| seafood | cute lobster on plate, miniature, kawaii style, game asset |
-| bakery | cute cupcake with swirl frosting, miniature, pastel cartoon, game asset |
+| burger | low poly cartoon hamburger, sesame bun, lettuce and tomato layers, bright colors, single object centered, 3D icon, white background |
+| pizza | low poly cartoon pepperoni pizza slice, red pepperoni circles on melted cheese, triangular slice, bright colors, 3D icon, white background |
+| sushi | low poly cartoon sushi nigiri pair, one salmon one tuna, simple rice block, bright colors, 3D icon, white background |
+| ramen | low poly cartoon ramen bowl, noodles inside bowl, soft boiled egg, narutomaki, neat and tidy, bright colors, 3D icon, white background |
+| cafe | low poly cartoon coffee cup, latte art heart on top, small rising steam, bright colors, 3D icon, white background |
+| mexican | low poly cartoon taco, corn tortilla shell, meat and lettuce filling, bright colors, single taco only, 3D icon, white background |
+| italian | low poly cartoon spaghetti and meatball, pasta twirled on fork, bright red sauce, 3D icon, white background |
+| chinese | low poly cartoon dumpling trio, pleated wrapper, stacked together, bright colors, 3D icon, white background |
+| thai | low poly cartoon green curry bowl, coconut soup with basil leaf on top, bright colors, no table, 3D icon, white background |
+| steakhouse | low poly cartoon T-bone steak, grill marks, juicy thick cut, bright colors, no plate, 3D icon, white background |
+| seafood | low poly cartoon red lobster, claws raised, bright red shell, simple shape, no plate, 3D icon, white background |
+| bakery | low poly cartoon cupcake, tall swirl frosting, rainbow sprinkles, pastel colors, 3D icon, white background |
 
 ---
 
@@ -31,34 +34,36 @@ Floating icons above each building.
 
 | category | prompt |
 |----------|--------|
-| building_regular | tiny run-down diner building, weathered brick, cracked paint, rusty sign, single storey, isometric, stylized 3D game asset |
-| building_mid | cozy neighborhood restaurant building, warm brick facade, glowing neon sign, two storeys, isometric, stylized 3D game asset |
-| building_major | upscale modern restaurant, glass and steel facade, elegant canopy entrance, three storeys, isometric, stylized 3D game asset |
+| building_regular | low poly tiny shop building, single storey, small awning, warm colors, cartoon miniature, 3D game asset, white background |
+| building_mid | low poly cozy two-storey restaurant, balcony, glowing warm windows, neon open sign, cartoon miniature, 3D game asset, white background |
+| building_major | low poly grand three-storey restaurant, rooftop terrace with string lights, large glass windows, golden awning, luxury feel, cartoon miniature, 3D game asset, white background |
 
 ### Landmark buildings (one per category — shaped like their food)
 
 Each landmark is a building whose architecture is shaped like or strongly evokes its food category.
+**Same low-poly cartoon style** — bright colors, flat shading, toy-like proportions.
 
 | category | prompt |
 |----------|--------|
-| landmark_burger | restaurant building shaped like a giant hamburger, sesame seed bun roof, lettuce and tomato walls, golden arched entrance, whimsical architecture, isometric, stylized 3D game asset |
-| landmark_pizza | pizzeria building with circular pizza-shaped roof, pepperoni window holes, melted cheese dripping eaves, Italian flag, isometric, stylized 3D game asset |
-| landmark_sushi | sushi restaurant shaped like a giant maki roll wrapped in nori, bamboo garden entrance, Japanese paper lanterns, isometric, stylized 3D game asset |
-| landmark_ramen | ramen shop building shaped like a giant ramen bowl, chopstick columns, steam rising from rooftop vents, noren curtain entrance, isometric, stylized 3D game asset |
-| landmark_cafe | coffee shop building shaped like a giant coffee cup on a saucer base, steam chimney, latte art window, chalkboard sign, isometric, stylized 3D game asset |
-| landmark_mexican | Mexican restaurant shaped like a giant colorful taco, vibrant tilework facade, sombrero roof dome, cactus sculptures flanking door, isometric, stylized 3D game asset |
-| landmark_italian | Italian trattoria building shaped like a pasta bowl, Tuscan arched windows, vine-covered walls, chef statue at entrance, isometric, stylized 3D game asset |
-| landmark_chinese | Chinese restaurant shaped like a dim sum bamboo steamer, golden pagoda roof, red lanterns, dragon relief sculptures, isometric, stylized 3D game asset |
-| landmark_thai | Thai restaurant with golden temple spire roof, elephant sculptures flanking entrance, lotus pond courtyard, ornate gilded facade, isometric, stylized 3D game asset |
-| landmark_steakhouse | steakhouse building shaped like a giant steak on a plate, rustic reclaimed wood and stone facade, cowboy hat clock tower, grill smoke chimneys, isometric, stylized 3D game asset |
-| landmark_seafood | seafood restaurant shaped like a giant red lobster, curved claw arches as entrance, lighthouse tower, nautical rope and anchor details, isometric, stylized 3D game asset |
-| landmark_bakery | bakery building shaped like a giant cupcake, frosting swirl rooftop, pastel pink walls, sprinkle window trim, macaroon-shaped skylights, isometric, stylized 3D game asset |
+| landmark_burger | low poly building shaped like a giant hamburger, sesame seed bun roof, lettuce and tomato middle floor, cartoon, bright colors, 3D game asset, white background |
+| landmark_pizza | low poly building shaped like a giant pizza slice, pepperoni windows, melted cheese dripping from edges, cartoon, bright colors, 3D game asset, white background |
+| landmark_sushi | low poly building shaped like a giant maki roll, nori-wrapped walls, rice visible on top, cartoon, bright colors, 3D game asset, white background |
+| landmark_ramen | low poly building shaped like a giant ramen bowl, chopstick pillars, egg and narutomaki decorations, steam chimney, cartoon, bright colors, 3D game asset, white background |
+| landmark_cafe | low poly building shaped like a giant coffee cup on saucer, latte art on roof, steam chimney, cartoon, bright colors, 3D game asset, white background |
+| landmark_mexican | low poly building shaped like a giant taco, colorful shell walls, cactus at entrance, cartoon, bright colors, 3D game asset, white background |
+| landmark_italian | low poly building shaped like a leaning tower of pasta, spaghetti columns, meatball dome roof, cartoon, bright colors, 3D game asset, white background |
+| landmark_chinese | low poly building shaped like a giant dumpling, pleated roof, red and gold colors, small pagoda spire on top, cartoon, 3D game asset, white background |
+| landmark_thai | low poly building shaped like a giant curry bowl, golden spire lid, green and yellow walls, cartoon, bright colors, 3D game asset, white background |
+| landmark_steakhouse | low poly building shaped like a giant steak, grill-mark stripe walls, flame chimney on top, rustic wood door, cartoon, bright colors, 3D game asset, white background |
+| landmark_seafood | low poly building shaped like a giant lobster, red shell roof, claw arches as entrance, cartoon, bright colors, 3D game asset, white background |
+| landmark_bakery | low poly building shaped like a giant cupcake, frosting swirl roof, sprinkle decorations, pastel pink walls, cartoon, 3D game asset, white background |
 
 ---
 
 ## Tips for TRELLIS
 
-- "isometric" gives a consistent viewing angle
-- "stylized 3D game asset" pushes toward clean topology
-- "soft lighting, white background" for cleaner texture bake
-- Upload a reference image for more consistent results
+- "low poly" + "cartoon" + "bright colors" pushes toward clean iconic look
+- "white background" gives cleaner texture bake
+- "3D icon" or "3D game asset" helps with topology
+- "single object centered" prevents extra geometry (tables, plates)
+- Avoid: "realistic", "detailed", "photorealistic", "on a plate", "on a table"
