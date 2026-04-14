@@ -230,16 +230,21 @@ cd motzip-3d
 bash optimize.sh
 ```
 
-The pipeline:
+The pipeline (order matters — Draco **must** be last):
 
-1. **Simplify** → 30% of original polys (~3-5k faces)
-2. **Draco compression** → ~70% smaller geometry
-3. **Texture resize** → max 512×512
+1. **Dedup** — merge identical textures/materials/meshes
+2. **Simplify** — food 5%, buildings 10% of original faces
+3. **Resize textures** — 256×256
+4. **Prune** — strip resources orphaned by simplify
+5. **Draco compression** — geometry compression (final step, stays compressed)
+
+> **Why this order?** If Draco runs before resize, the resize step decodes
+> Draco internally and the output ships uncompressed — files bloat 5-10×.
 
 Input: `3d/food/` and `3d/buildings/`.
 Output: `optimized/` → auto-copied to `../motzip-app/public/models/food/` and `.../buildings/`.
 
-Target: each final GLB <500KB.
+Target: each final GLB <500 KB. The frontend uses `DRACOLoader` to decode at runtime.
 
 ---
 

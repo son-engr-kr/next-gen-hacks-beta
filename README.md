@@ -165,12 +165,14 @@ Edit prompts in [`motzip-3d/prompts.md`](./motzip-3d/prompts.md).
 
 > First run downloads ~5 GB of TRELLIS model weights from HuggingFace. Cached afterwards.
 
-**Optimize for web** (simplify → Draco → resize to 512px, target <500 KB per file):
+**Optimize for web** (dedup → simplify → resize 256px → prune → Draco, target <500 KB):
 
 ```bash
 cd motzip-3d
 bash optimize.sh
 ```
+
+> **Always run `optimize.sh` before committing models.** Raw TRELLIS outputs are 10-40 MB each; the pipeline compresses them to <800 KB. The frontend relies on Draco decoding, so unoptimized GLBs will not load.
 
 Outputs: `3d/` → `optimized/` → deployed to `motzip-app/public/models/food/` and `motzip-app/public/models/buildings/`.
 

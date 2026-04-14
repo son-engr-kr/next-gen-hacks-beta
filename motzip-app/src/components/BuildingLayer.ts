@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import maplibregl from "maplibre-gl";
 import { restaurants } from "@/data/restaurants";
@@ -533,7 +534,10 @@ export function createBuildingCustomLayer(
       pmrem.dispose();
 
       // Second pass: upgrade to GLB models when they finish loading
+      const draco = new DRACOLoader();
+      draco.setDecoderPath("/draco/");
       const loader = new GLTFLoader();
+      loader.setDRACOLoader(draco);
       loadBuildingModels(loader).then((models) => {
         if (Object.keys(models).length > 0) {
           rebuildBuildings(models);
