@@ -253,7 +253,8 @@ export default function Map3D() {
         </div>
 
         {/* Legend */}
-        <div className="bg-gray-950/70 backdrop-blur-xl rounded-2xl p-3 border border-white/[0.06] text-[10px] text-gray-400 space-y-2 shadow-xl shadow-black/30">
+        <div className="bg-gray-950/70 backdrop-blur-xl rounded-2xl p-3 border border-white/[0.06] text-[10px] text-gray-400 space-y-1.5 shadow-xl shadow-black/30">
+          <p className="text-[9px] uppercase tracking-widest text-gray-600 font-bold pb-0.5">Building</p>
           <div className="flex items-center gap-2">
             <div className="w-2 h-5 rounded-sm bg-gradient-to-t from-amber-700 to-amber-300" />
             <span>Height = Reviews</span>
@@ -267,9 +268,18 @@ export default function Map3D() {
             <span>Red = Lower Rated</span>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-sm leading-none">&#x2728;</span>
-            <span>Sparks = Trending</span>
+            <div className="w-3 h-3 rounded-full bg-gray-700/60 border border-gray-500/40" />
+            <span>Dim = Currently Closed</span>
           </div>
+          <p className="text-[9px] uppercase tracking-widest text-gray-600 font-bold pt-0.5 pb-0.5">Ground Rings</p>
+          <div className="flex items-center gap-2"><div className="w-3 h-1 rounded-full bg-orange-500" /><span>Trending</span></div>
+          <div className="flex items-center gap-2"><div className="w-3 h-1 rounded-full bg-sky-400" /><span>Wheelchair</span></div>
+          <div className="flex items-center gap-2"><div className="w-3 h-1 rounded-full bg-emerald-400" /><span>Free Parking</span></div>
+          <div className="flex items-center gap-2"><div className="w-3 h-1 rounded-full bg-blue-400" /><span>Paid Parking</span></div>
+          <div className="flex items-center gap-2"><div className="w-3 h-1 rounded-full bg-amber-400" /><span>Valet</span></div>
+          <div className="flex items-center gap-2"><div className="w-3 h-1 rounded-full bg-purple-400" /><span>Live Music</span></div>
+          <div className="flex items-center gap-2"><div className="w-3 h-1 rounded-full bg-lime-400" /><span>Dogs OK</span></div>
+          <div className="flex items-center gap-2"><div className="w-3 h-1 rounded-full bg-pink-400" /><span>Cocktails</span></div>
         </div>
       </div>
 

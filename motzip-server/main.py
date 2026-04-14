@@ -152,23 +152,14 @@ async def get_restaurants(
     lng: float = -71.058,
     radius: float = 3000,
 ):
-    """Fetch nearby restaurants from Google Places API (New)."""
+    """Fetch nearby restaurants from Google Places API (New).
+
+    Makes 3 parallel requests targeting different cuisine groups so we get
+    ~50-60 unique buildings instead of the 20-per-request limit.
+    """
     if not GOOGLE_PLACES_API_KEY:
         return []
 
-    payload = {
-        "locationRestriction": {
-            "circle": {
-                "center": {"latitude": lat, "longitude": lng},
-                "radius": radius,
-            }
-        },
-        "includedTypes": [
-            "restaurant", "cafe", "bakery", "bar",
-        ],
-        "maxResultCount": 20,
-        "rankPreference": "POPULARITY",
-    }
     field_mask = ",".join([
         "places.id",
         "places.displayName",
@@ -187,21 +178,58 @@ async def get_restaurants(
         "places.priceLevel",
     ])
 
-    async with httpx.AsyncClient() as client:
-        r = await client.post(
-            "https://places.googleapis.com/v1/places:searchNearby",
-            headers={
-                "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
-                "X-Goog-FieldMask": field_mask,
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=10,
-        )
-        r.raise_for_status()
+    # Three groups so each request returns distinct cuisine clusters
+    TYPE_GROUPS = [
+        ["restaurant", "cafe", "bakery"],
+        ["pizza_restaurant", "sushi_restaurant", "ramen_restaurant",
+         "italian_restaurant", "chinese_restaurant", "thai_restaurant"],
+        ["seafood_restaurant", "mexican_restaurant", "burger_restaurant",
+         "steak_house", "coffee_shop"],
+    ]
 
-    data = r.json()
-    places = data.get("places", [])
+    async def _fetch(types: list[str]) -> list[dict]:
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.post(
+                    "https://places.googleapis.com/v1/places:searchNearby",
+                    headers={
+                        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+                        "X-Goog-FieldMask": field_mask,
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "locationRestriction": {
+                            "circle": {
+                                "center": {"latitude": lat, "longitude": lng},
+                                "radius": radius,
+                            }
+                        },
+                        "includedTypes": types,
+                        "maxResultCount": 20,
+                        "rankPreference": "POPULARITY",
+                    },
+                    timeout=10,
+                )
+                r.raise_for_status()
+                return r.json().get("places", [])
+        except Exception:
+            return []
+
+    batches = await asyncio.gather(*[_fetch(types) for types in TYPE_GROUPS])
+
+    # Deduplicate by place ID across all batches
+    seen_ids: set[str] = set()
+    places: list[dict] = []
+    for batch in batches:
+        for p in batch:
+            pid = p.get("id", "")
+            if pid and pid not in seen_ids:
+                seen_ids.add(pid)
+                places.append(p)
+
+    # Pre-compute average review count for trending threshold
+    avg_count = sum(p.get("userRatingCount", 0) for p in places) / max(len(places), 1)
+
     results: list[PlaceRestaurant] = []
 
     for p in places:
@@ -222,7 +250,6 @@ async def get_restaurants(
             top_review = reviews[0].get("text", {}).get("text", "") if reviews[0].get("text") else ""
 
         # Trending = high rating AND above-average review count
-        avg_count = sum(pl.get("userRatingCount", 0) for pl in places) / max(len(places), 1)
         is_trending = rating >= 4.3 and review_count >= avg_count * 1.5
 
         # Accessibility
