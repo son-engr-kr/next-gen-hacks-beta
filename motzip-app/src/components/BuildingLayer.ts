@@ -337,7 +337,7 @@ function createBuildingGroup(
 
   if (tier === "landmark") {
     const modelKey = `landmark_${r.category}` as LandmarkModelKey;
-    const template = models?.[modelKey];
+    const template = models?.[modelKey] ?? models?.["building_major"];
     if (template) {
       const totalH = r.reviewCount * 1.2 * s;
       const baseW  = 35 * s;
@@ -466,7 +466,7 @@ export function createBuildingCustomLayer(
     }
   }
 
-  function rebuildFoodIcons(food: FoodModels) {
+  function rebuildFoodIcons(food: FoodModels, buildings: BuildingModels | null) {
     foodIconGroups.forEach(({ outer }) => scene.remove(outer));
     foodIconGroups = [];
 
@@ -476,6 +476,10 @@ export function createBuildingCustomLayer(
     for (const r of restaurants) {
       const template = food[r.category];
       if (!template) continue;
+
+      // Landmark buildings are already food-shaped — skip redundant icon
+      const tier = getBuildingTier(r.reviewCount, r.rating);
+      if (tier === "landmark" && buildings?.[`landmark_${r.category}` as LandmarkModelKey]) continue;
 
       const icon = placeGlbModel(template, SIZE, SIZE);
       const merc = maplibregl.MercatorCoordinate.fromLngLat([r.lng, r.lat], 0);
@@ -538,18 +542,17 @@ export function createBuildingCustomLayer(
       draco.setDecoderPath("/draco/");
       const loader = new GLTFLoader();
       loader.setDRACOLoader(draco);
-      loadBuildingModels(loader).then((models) => {
-        if (Object.keys(models).length > 0) {
-          rebuildBuildings(models);
+      Promise.all([loadBuildingModels(loader), loadFoodModels(loader)]).then(
+        ([buildings, food]) => {
+          if (Object.keys(buildings).length > 0) {
+            rebuildBuildings(buildings);
+          }
+          if (Object.keys(food).length > 0) {
+            rebuildFoodIcons(food, buildings);
+          }
           map.triggerRepaint();
-        }
-      });
-      loadFoodModels(loader).then((food) => {
-        if (Object.keys(food).length > 0) {
-          rebuildFoodIcons(food);
-          map.triggerRepaint();
-        }
-      });
+        },
+      );
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
