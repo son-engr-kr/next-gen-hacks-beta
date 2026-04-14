@@ -3,7 +3,6 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import maplibregl from "maplibre-gl";
-import { restaurants } from "@/data/restaurants";
 import { Restaurant, Category } from "@/types/restaurant";
 
 // --- Procedural window texture ---
@@ -433,7 +432,8 @@ async function loadFoodModels(loader: GLTFLoader): Promise<FoodModels> {
 // ── Custom layer export ────────────────────────────────────────────────────────
 
 export function createBuildingCustomLayer(
-  map: maplibregl.Map
+  map: maplibregl.Map,
+  restaurants: Restaurant[]
 ): maplibregl.CustomLayerInterface {
   let renderer: THREE.WebGLRenderer;
   let scene: THREE.Scene;

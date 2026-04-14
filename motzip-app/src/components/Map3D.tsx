@@ -3,13 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { restaurants } from "@/data/restaurants";
+import { restaurants as staticRestaurants } from "@/data/restaurants";
 import { Restaurant } from "@/types/restaurant";
 import { createBuildingCustomLayer } from "./BuildingLayer";
 import RestaurantPanel from "./RestaurantPanel";
 import Fireworks from "./Fireworks";
 
-function buildGeoJSON() {
+const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:8000";
+
+function buildGeoJSON(restaurants: Restaurant[]) {
   return {
     type: "FeatureCollection" as const,
     features: restaurants.map((r) => ({
@@ -47,11 +49,60 @@ export default function Map3D() {
   const [trendingScreenPositions, setTrendingScreenPositions] = useState<
     { x: number; y: number }[]
   >([]);
+  const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
+  const [dataSource, setDataSource] = useState<"loading" | "live" | "static">("loading");
+
+  // Fetch restaurants from server, fall back to static data
+  useEffect(() => {
+    const controller = new AbortController();
+    const fallbackTimer = setTimeout(() => {
+      if (restaurants.length === 0) {
+        setRestaurants(staticRestaurants);
+        setDataSource("static");
+      }
+    }, 5000);
+
+    fetch(`${SERVER_URL}/api/restaurants`, { signal: controller.signal })
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data: Restaurant[]) => {
+        clearTimeout(fallbackTimer);
+        if (data && data.length > 0) {
+          setRestaurants(data);
+          setDataSource("live");
+        } else {
+          setRestaurants(staticRestaurants);
+          setDataSource("static");
+        }
+      })
+      .catch((err) => {
+        if (err.name === "AbortError") return;
+        clearTimeout(fallbackTimer);
+        setRestaurants(staticRestaurants);
+        setDataSource("static");
+      });
+
+    return () => {
+      controller.abort();
+      clearTimeout(fallbackTimer);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const trendingRestaurants = restaurants.filter((r) => r.isTrending);
 
   useEffect(() => {
-    if (!mapContainer.current) return;
+    if (!mapContainer.current || restaurants.length === 0) return;
+    // If map already initialized, just update the GeoJSON source
+    if (mapRef.current) {
+      const map = mapRef.current;
+      const src = map.getSource("restaurants-hit") as maplibregl.GeoJSONSource | undefined;
+      if (src) {
+        src.setData(buildGeoJSON(restaurants));
+      }
+      return;
+    }
 
     const map = new maplibregl.Map({
       container: mapContainer.current,
@@ -95,11 +146,11 @@ export default function Map3D() {
 
     map.on("load", () => {
       // Three.js custom layer for 3D buildings with textures
-      const buildingLayer = createBuildingCustomLayer(map);
+      const buildingLayer = createBuildingCustomLayer(map, restaurants);
       map.addLayer(buildingLayer);
 
       // Invisible fill-extrusion for click hit-testing
-      const geojson = buildGeoJSON();
+      const geojson = buildGeoJSON(restaurants);
       map.addSource("restaurants-hit", { type: "geojson", data: geojson });
       map.addLayer({
         id: "restaurant-hit",
@@ -166,13 +217,28 @@ export default function Map3D() {
 
     return () => {
       map.remove();
+      mapRef.current = null;
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [restaurants]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="relative w-full h-full">
       <div ref={mapContainer} className="w-full h-full" />
       <Fireworks positions={trendingScreenPositions} />
+
+      {/* Data source badge */}
+      {dataSource !== "loading" && (
+        <div className="absolute top-3 left-3 z-20">
+          <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-semibold border backdrop-blur-xl shadow-lg ${
+            dataSource === "live"
+              ? "bg-emerald-950/70 border-emerald-500/20 text-emerald-300"
+              : "bg-gray-950/70 border-white/[0.06] text-gray-400"
+          }`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${dataSource === "live" ? "bg-emerald-400 animate-pulse" : "bg-gray-500"}`} />
+            {dataSource === "live" ? "Google Places" : "Demo data"}
+          </div>
+        </div>
+      )}
 
       {/* Bottom-left: spot count + legend */}
       <div className="absolute bottom-4 left-3 z-20 flex flex-col gap-2">

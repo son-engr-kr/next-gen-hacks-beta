@@ -94,6 +94,137 @@ Respond ONLY with a JSON object (no markdown, no explanation):
 }}"""
 
 
+GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
+
+GOOGLE_TYPE_MAP: dict[str, str] = {
+    "burger_restaurant": "burger",
+    "pizza_restaurant": "pizza",
+    "sushi_restaurant": "sushi",
+    "ramen_restaurant": "ramen",
+    "japanese_restaurant": "sushi",
+    "cafe": "cafe",
+    "coffee_shop": "cafe",
+    "bakery": "bakery",
+    "mexican_restaurant": "mexican",
+    "italian_restaurant": "italian",
+    "chinese_restaurant": "chinese",
+    "thai_restaurant": "thai",
+    "steak_house": "steakhouse",
+    "seafood_restaurant": "seafood",
+    "american_restaurant": "steakhouse",
+    "sandwich_shop": "burger",
+    "fast_food_restaurant": "burger",
+}
+
+
+class PlaceRestaurant(BaseModel):
+    id: str
+    name: str
+    category: str
+    lat: float
+    lng: float
+    rating: float
+    reviewCount: int
+    isTrending: bool
+    description: str
+    topReview: str
+
+
+def _map_types_to_category(types: list[str]) -> str:
+    for t in types:
+        if t in GOOGLE_TYPE_MAP:
+            return GOOGLE_TYPE_MAP[t]
+    return "cafe"
+
+
+@app.get("/api/restaurants", response_model=list[PlaceRestaurant])
+async def get_restaurants(
+    lat: float = 42.355,
+    lng: float = -71.058,
+    radius: float = 3000,
+):
+    """Fetch nearby restaurants from Google Places API (New)."""
+    if not GOOGLE_PLACES_API_KEY:
+        return []
+
+    payload = {
+        "locationRestriction": {
+            "circle": {
+                "center": {"latitude": lat, "longitude": lng},
+                "radius": radius,
+            }
+        },
+        "includedTypes": [
+            "restaurant", "cafe", "bakery", "bar",
+        ],
+        "maxResultCount": 20,
+        "rankPreference": "POPULARITY",
+    }
+    field_mask = ",".join([
+        "places.id",
+        "places.displayName",
+        "places.types",
+        "places.location",
+        "places.rating",
+        "places.userRatingCount",
+        "places.editorialSummary",
+        "places.reviews",
+    ])
+
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            "https://places.googleapis.com/v1/places:searchNearby",
+            headers={
+                "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+                "X-Goog-FieldMask": field_mask,
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=10,
+        )
+        r.raise_for_status()
+
+    data = r.json()
+    places = data.get("places", [])
+    results: list[PlaceRestaurant] = []
+
+    for p in places:
+        location = p.get("location", {})
+        place_lat = location.get("latitude", lat)
+        place_lng = location.get("longitude", lng)
+        rating = float(p.get("rating", 3.0))
+        review_count = int(p.get("userRatingCount", 0))
+        types = p.get("types", [])
+        category = _map_types_to_category(types)
+
+        editorial = p.get("editorialSummary", {})
+        description = editorial.get("text", "") if editorial else ""
+
+        reviews = p.get("reviews", [])
+        top_review = ""
+        if reviews:
+            top_review = reviews[0].get("text", {}).get("text", "") if reviews[0].get("text") else ""
+
+        # Trending = high rating AND above-average review count
+        avg_count = sum(pl.get("userRatingCount", 0) for pl in places) / max(len(places), 1)
+        is_trending = rating >= 4.3 and review_count >= avg_count * 1.5
+
+        results.append(PlaceRestaurant(
+            id=p.get("id", f"place_{len(results)}"),
+            name=p.get("displayName", {}).get("text", "Unknown"),
+            category=category,
+            lat=place_lat,
+            lng=place_lng,
+            rating=round(rating, 1),
+            reviewCount=review_count,
+            isTrending=is_trending,
+            description=description,
+            topReview=top_review,
+        ))
+
+    return results
+
+
 class SearchQuery(BaseModel):
     query: str
 
