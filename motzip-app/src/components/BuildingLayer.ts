@@ -254,46 +254,35 @@ async function loadFoodModels(loader: GLTFLoader): Promise<FoodModels> {
   return models;
 }
 
-// ── Ground indicator system ────────────────────────────────────────────────────
+// ── Feature marker system ──────────────────────────────────────────────────────
 //
-// Each restaurant's features are encoded as glowing rings on the ground
-// around the building footprint. Multiple rings at increasing radii =
-// multiple features. A trending building also gets a vertical light-beam
-// column that rises above the roof.
+// Each restaurant feature is shown as a small glowing octahedron (gem) floating
+// just above the ground beside the building. Multiple features = a compact row
+// of gems. A trending building also gets a vertical light-beam column.
 //
-// Ring color guide:
-//   🔥 orange  = Trending       ♿ blue     = Wheelchair accessible
-//   🟢 green   = Free parking   🔵 blue-ish = Paid parking
-//   🟡 gold    = Valet parking  🟣 purple  = Live music
-//   🍃 lime    = Dogs allowed   🌸 pink    = Cocktails served
+// Gem color guide:
+//   orange = Trending   sky-blue = Wheelchair   green = Free parking
+//   blue   = Paid park  gold     = Valet         purple = Live music
+//   lime   = Dogs       pink     = Cocktails
 
-interface GroundRingEntry {
+interface FeatureMarker {
   mesh: THREE.Mesh;
-  baseEmissive: number;
-  pulseOffset: number;
+  baseZ: number;
+  bobOffset: number;
 }
 
-/**
- * Flat glowing ring lying on the ground (XY plane = horizontal in Z-up space).
- */
-function createGroundRing(
-  innerR: number,
-  outerR: number,
-  color: string,
-  emissiveColor: string,
-  pulseOffset: number,
-): GroundRingEntry {
-  const geo = new THREE.RingGeometry(innerR, outerR, 48);
+/** Small glowing octahedron (diamond-shaped gem) */
+function createFeatureGem(color: string, emissiveColor: string, s: number): THREE.Mesh {
+  const geo = new THREE.OctahedronGeometry(2.2 * s);
   const mat = new THREE.MeshStandardMaterial({
     color,
     emissive: emissiveColor,
-    emissiveIntensity: 0.9,
-    transparent: true,
-    opacity: 0.80,
+    emissiveIntensity: 1.0,
+    metalness: 0.5,
+    roughness: 0.15,
     side: THREE.DoubleSide,
-    depthWrite: false,
   });
-  return { mesh: new THREE.Mesh(geo, mat), baseEmissive: 0.9, pulseOffset };
+  return new THREE.Mesh(geo, mat);
 }
 
 /**
@@ -340,47 +329,57 @@ export function createBuildingCustomLayer(
 
   let buildingGroups: THREE.Group[] = [];
   let foodIconGroups: { outer: THREE.Group; baseZ: number }[] = [];
-  let groundRings: GroundRingEntry[] = [];
+  let featureMarkers: FeatureMarker[] = [];
   let trendingBeacons: THREE.Group[] = [];
 
   const buildingTopZMap = new Map<string, number>();
 
-  // ── Ground indicators ──────────────────────────────────────────────────────
+  // ── Feature markers ────────────────────────────────────────────────────────
 
   function rebuildGroundIndicators() {
-    groundRings.forEach(({ mesh }) => scene.remove(mesh));
+    featureMarkers.forEach(({ mesh }) => scene.remove(mesh));
     trendingBeacons.forEach((g) => scene.remove(g));
-    groundRings = [];
+    featureMarkers = [];
     trendingBeacons = [];
 
-    restaurants.forEach((r, i) => {
+    restaurants.forEach((r, ri) => {
       const merc  = maplibregl.MercatorCoordinate.fromLngLat([r.lng, r.lat], 0);
       const bx    = merc.x - refMerc.x;
       const by    = merc.y - refMerc.y;
       const baseW = getBuildingBaseW(r, s);
-      const rW    = baseW * 0.07; // ring tube width
 
-      // Each active feature adds one ring at an increasing radius
-      let slot = 0;
-      const addRing = (color: string, emissive: string) => {
-        const inner = baseW * (1.1 + slot * 0.38);
-        const entry = createGroundRing(inner, inner + rW, color, emissive, i * 0.6 + slot * 1.1);
-        entry.mesh.position.set(bx, by, 0.3 * s);
-        scene.add(entry.mesh);
-        groundRings.push(entry);
-        slot++;
-      };
+      // Collect active features in priority order
+      const features: { color: string; emissive: string }[] = [];
+      if (r.isTrending)              features.push({ color: "#ff8c00", emissive: "#ff4400" });
+      if (r.isWheelchairAccessible)  features.push({ color: "#00bfff", emissive: "#007fff" });
+      if (r.parkingType === "free")  features.push({ color: "#22c55e", emissive: "#15803d" });
+      if (r.parkingType === "paid")  features.push({ color: "#60a5fa", emissive: "#1d4ed8" });
+      if (r.parkingType === "valet") features.push({ color: "#f59e0b", emissive: "#b45309" });
+      if (r.hasLiveMusic)            features.push({ color: "#a855f7", emissive: "#7c3aed" });
+      if (r.allowsDogs)              features.push({ color: "#4ade80", emissive: "#16a34a" });
+      if (r.servesCocktails)         features.push({ color: "#ec4899", emissive: "#be185d" });
 
-      if (r.isTrending)               addRing("#ff8c00", "#ff4400");
-      if (r.isWheelchairAccessible)   addRing("#00bfff", "#007fff");
-      if (r.parkingType === "free")    addRing("#22c55e", "#15803d");
-      if (r.parkingType === "paid")    addRing("#60a5fa", "#1d4ed8");
-      if (r.parkingType === "valet")   addRing("#f59e0b", "#b45309");
-      if (r.hasLiveMusic)              addRing("#a855f7", "#7c3aed");
-      if (r.allowsDogs)                addRing("#4ade80", "#16a34a");
-      if (r.servesCocktails)           addRing("#ec4899", "#be185d");
+      if (features.length > 0) {
+        const gemR    = 2.2 * s;
+        const spacing = gemR * 3.0;
+        const startX  = bx + baseW * 0.72;
+        const startY  = by + baseW * 0.72;
+        // Center the row around the diagonal offset
+        const rowOffset = ((features.length - 1) * spacing) / 2;
 
-      // Vertical beacon for trending
+        features.forEach((feat, fi) => {
+          const mesh = createFeatureGem(feat.color, feat.emissive, s);
+          mesh.position.set(
+            startX + fi * spacing - rowOffset,
+            startY,
+            gemR + 1.5 * s,
+          );
+          scene.add(mesh);
+          featureMarkers.push({ mesh, baseZ: gemR + 1.5 * s, bobOffset: ri * 0.9 + fi * 0.5 });
+        });
+      }
+
+      // Trending → vertical light-beam column
       if (r.isTrending) {
         const topZ   = buildingTopZMap.get(r.id) ?? 50 * s;
         const beacon = createTrendingBeacon(topZ, s);
@@ -498,13 +497,10 @@ export function createBuildingCustomLayer(
         outer.position.z = baseZ + Math.sin(t * 1.5 + i * 0.8) * 5 * s;
       });
 
-      // Pulse ground rings
-      groundRings.forEach(({ mesh, baseEmissive, pulseOffset }) => {
-        const mat = mesh.material as THREE.MeshStandardMaterial;
-        const pulse = Math.sin(t * 1.8 + pulseOffset) * 0.35;
-        mat.emissiveIntensity = baseEmissive + pulse;
-        mat.opacity = 0.7 + pulse * 0.3;
-        mat.needsUpdate = false; // color not changing, just intensity
+      // Float + spin feature gems
+      featureMarkers.forEach(({ mesh, baseZ, bobOffset }) => {
+        mesh.position.z = baseZ + Math.sin(t * 1.2 + bobOffset) * 1.8 * s;
+        mesh.rotation.z += 0.007;
       });
 
       // Pulse trending beacons

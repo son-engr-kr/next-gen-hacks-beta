@@ -271,15 +271,15 @@ export default function Map3D() {
             <div className="w-3 h-3 rounded-full bg-gray-700/60 border border-gray-500/40" />
             <span>Dim = Currently Closed</span>
           </div>
-          <p className="text-[9px] uppercase tracking-widest text-gray-600 font-bold pt-0.5 pb-0.5">Ground Rings</p>
-          <div className="flex items-center gap-2"><div className="w-3 h-1 rounded-full bg-orange-500" /><span>Trending</span></div>
-          <div className="flex items-center gap-2"><div className="w-3 h-1 rounded-full bg-sky-400" /><span>Wheelchair</span></div>
-          <div className="flex items-center gap-2"><div className="w-3 h-1 rounded-full bg-emerald-400" /><span>Free Parking</span></div>
-          <div className="flex items-center gap-2"><div className="w-3 h-1 rounded-full bg-blue-400" /><span>Paid Parking</span></div>
-          <div className="flex items-center gap-2"><div className="w-3 h-1 rounded-full bg-amber-400" /><span>Valet</span></div>
-          <div className="flex items-center gap-2"><div className="w-3 h-1 rounded-full bg-purple-400" /><span>Live Music</span></div>
-          <div className="flex items-center gap-2"><div className="w-3 h-1 rounded-full bg-lime-400" /><span>Dogs OK</span></div>
-          <div className="flex items-center gap-2"><div className="w-3 h-1 rounded-full bg-pink-400" /><span>Cocktails</span></div>
+          <p className="text-[9px] uppercase tracking-widest text-gray-600 font-bold pt-0.5 pb-0.5">Gems (beside building)</p>
+          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rotate-45 bg-orange-500" /><span>Trending</span></div>
+          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rotate-45 bg-sky-400" /><span>Wheelchair</span></div>
+          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rotate-45 bg-emerald-400" /><span>Free Parking</span></div>
+          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rotate-45 bg-blue-400" /><span>Paid Parking</span></div>
+          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rotate-45 bg-amber-400" /><span>Valet</span></div>
+          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rotate-45 bg-purple-400" /><span>Live Music</span></div>
+          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rotate-45 bg-lime-400" /><span>Dogs OK</span></div>
+          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rotate-45 bg-pink-400" /><span>Cocktails</span></div>
         </div>
       </div>
 
