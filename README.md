@@ -1,24 +1,50 @@
 # motzip
 
-Boston restaurant 3D map with a local LLM backend for natural language search, review analysis, and food image recognition.
+Boston restaurant 3D map — Google Places API 기반 실시간 데이터, ElevenLabs 음성 검색, Twilio 전화 예약.
 
 ## Structure
 
 | Directory | Description |
 |---|---|
-| `motzip-app/` | Next.js frontend — 3D map (MapLibre + Three.js), restaurant panel, fireworks |
-| `motzip-server/` | FastAPI + Ollama (Gemma 4) — local LLM API |
-| `motzip-3d/` | 3D model generation pipeline — TRELLIS text-to-3D + mesh optimization |
+| `motzip-app/` | Next.js frontend — 3D map (MapLibre + Three.js), 음성 검색 UI, 레스토랑 패널, Twilio 예약 버튼 |
+| `motzip-server/` | FastAPI — Google Places API, ElevenLabs STT/TTS, Ollama LLM, Twilio 전화 |
+| `motzip-3d/` | 3D 모델 생성 파이프라인 (TRELLIS text-to-3D + mesh 최적화) |
+
+---
+
+## 환경변수 설정 (.env)
+
+`motzip-server/.env` 파일을 아래 내용으로 생성. **키 값은 팀원에게 별도로 전달받을 것.**
+
+```env
+# Google Places API (GCP 프로젝트: theta-bliss-486220-s1)
+GOOGLE_PLACES_API_KEY=
+
+# ElevenLabs — STT(Scribe) + TTS
+ELEVENLABS_API_KEY=
+ELEVENLABS_VOICE_ID=EXAVITQu4vr4xnSDxMaL   # Sarah (기본값, 변경 가능)
+
+# Twilio — 레스토랑 전화 예약
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_PHONE_NUMBER=+18447589915
+
+# ngrok — Twilio webhook용 공개 URL (로컬 개발 시 필요)
+NGROK_URL=https://xxxx.ngrok-free.app
+
+# 테스트용 수신 번호 오버라이드 (Twilio Trial 계정 한정)
+# Trial 계정은 Verified Caller ID로 등록된 번호로만 전화 가능
+# 실제 레스토랑에 전화할 경우 이 줄을 삭제하거나 비워둘 것
+TWILIO_TEST_TO=
+```
 
 ---
 
 ## Install
 
-One-time setup. After this, [Run](#run) should just work.
-
 ### Frontend (motzip-app)
 
-Requires Node.js 20+.
+Node.js 20+ 필요.
 
 ```bash
 cd motzip-app
@@ -27,80 +53,39 @@ npm install
 
 ### Server (motzip-server)
 
-**1. Install Ollama**
-
-Windows: download from https://ollama.com/download/windows. Ollama runs as a background service after install.
-
-**2. Pull the model**
+Python 3.11+ 및 [uv](https://docs.astral.sh/uv/) 필요.
 
 ```bash
-ollama pull gemma4:e4b-it-q4_K_M
-```
-
-Default model: `gemma4:e4b-it-q4_K_M` (9.6 GB, multimodal). Override at runtime with `MOTZIP_MODEL`.
-
-**3. Python environment**
-
-Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/):
-
-```bash
-winget install --id=astral-sh.uv   # if not installed
 cd motzip-server
 uv sync
 ```
 
-### 3D pipeline (motzip-3d)
+### Ollama (LLM — 음성 필터 추출용)
 
-Only needed to regenerate the 3D models. Pre-built models ship in `motzip-app/public/models/`.
-
-| Requirement | Notes |
-|------------|-------|
-| NVIDIA GPU, ≥8GB VRAM | Tested on RTX 3080Ti 16GB |
-| CUDA driver 12.x | `nvidia-smi` to check |
-| Python 3.11 | |
-| uv (latest) | |
-| Visual Studio 2022 Community | "Desktop development with C++" workload — needed for CUDA extension builds |
-| Node.js (latest) | For `gltf-transform` mesh optimization |
+Ollama 없어도 Google Places + ElevenLabs는 동작함. 음성 쿼리 필터링 정확도 향상을 위해 설치 권장.
 
 ```bash
-cd motzip-3d
-git clone --recurse-submodules https://github.com/microsoft/TRELLIS.git
-cd TRELLIS
-uv venv --python 3.11 .venv
-source .venv/Scripts/activate
-
-# PyTorch + CUDA 12.1
-uv pip install torch==2.4.0 torchvision==0.19.0 \
-  --index-url https://download.pytorch.org/whl/cu121
-
-# All other deps — see motzip-3d/README.md for full commands
-```
-
-CUDA extensions (need MSVC):
-
-```bash
-cd ..    # back to motzip-3d/
-git clone --recurse-submodules https://github.com/JeffreyXiang/diffoctreerast.git extensions/diffoctreerast
-git clone https://github.com/autonomousvision/mip-splatting.git extensions/mip-splatting
-./install_nvdiffrast.bat
-./install_extensions.bat
-```
-
-Full step-by-step: [`motzip-3d/README.md`](./motzip-3d/README.md).
-
-Mesh optimization tooling:
-
-```bash
-npm install -g @gltf-transform/cli
+# 설치: https://ollama.com
+ollama pull gemma3:4b
+ollama serve
 ```
 
 ---
 
 ## Run
 
-Each component is independent. Start only what you need.
+터미널 3개 필요 (Twilio 전화 기능 사용 시).
 
-### Frontend (motzip-app)
+### Terminal 1 — 서버
+
+```bash
+cd motzip-server
+uv run uvicorn main:app --reload
+```
+
+http://localhost:8000
+
+### Terminal 2 — 프론트엔드
 
 ```bash
 cd motzip-app
@@ -109,109 +94,65 @@ npm run dev
 
 http://localhost:3000
 
-Production build:
+### Terminal 3 — ngrok (Twilio 전화 기능 사용 시만)
 
 ```bash
-npm run build && npm start
+ngrok http 8000
 ```
 
-### Server (motzip-server)
+출력된 `https://xxxx.ngrok-free.app` URL을 `.env`의 `NGROK_URL`에 입력 후 서버 재시작.
+
+### Terminal 4 (선택) — Ollama
 
 ```bash
-cd motzip-server
-uv run python main.py
-```
-
-http://localhost:8000
-
-The server polls Ollama every 2 seconds — startup order doesn't matter.
-
-Override the model per run:
-
-```bash
-MOTZIP_MODEL=gemma4:e2b-it-q4_K_M uv run python main.py     # lighter / faster
-MOTZIP_MODEL=gemma4:26b-a4b-it-q4_K_M uv run python main.py # higher quality
-```
-
-### 3D pipeline (motzip-3d)
-
-**Generate models** (text-to-3D via TRELLIS):
-
-```bash
-cd motzip-3d
-source TRELLIS/.venv/Scripts/activate
-
-python generate.py --all                        # all food icons + all buildings
-python generate.py --all --type food            # food icons only (12 items)
-python generate.py --all --type building        # buildings only (3 tiers + 12 landmarks)
-python generate.py --category landmark_seafood  # single item
-python generate.py --all --manual               # pause after each for Y/n/retry
-python generate.py --all --skip-existing        # skip already-generated files
-python generate.py --all --optimize             # generate + optimize in one step
-```
-
-Output:
-```
-motzip-3d/
-├── 3d/
-│   ├── food/<category>.glb        ← raw 3D food icons
-│   └── buildings/<key>.glb        ← raw 3D building models
-└── images/
-    ├── food/<category>.png         ← PNG preview renders
-    └── buildings/<key>.png
-```
-
-Edit prompts in [`motzip-3d/prompts.md`](./motzip-3d/prompts.md).
-
-> First run downloads ~5 GB of TRELLIS model weights from HuggingFace. Cached afterwards.
-
-**Optimize for web** (dedup → simplify → resize 256px → prune → Draco, target <500 KB):
-
-```bash
-cd motzip-3d
-bash optimize.sh
-```
-
-> **Always run `optimize.sh` before committing models.** Raw TRELLIS outputs are 10-40 MB each; the pipeline compresses them to <800 KB. The frontend relies on Draco decoding, so unoptimized GLBs will not load.
-
-Outputs: `3d/` → `optimized/` → deployed to `motzip-app/public/models/food/` and `motzip-app/public/models/buildings/`.
-
-**Manual Gradio UI** (image-to-3D or text-to-3D):
-
-```bash
-cd motzip-3d/TRELLIS
-python app.py        # image-to-3D at http://localhost:7860
-python app_text.py   # text-to-3D
+ollama serve
 ```
 
 ---
 
-## Test
+## 주요 기능
 
-### Frontend
+### 3D 지도
+- Google Places API로 주변 식당 ~40개 실시간 로드
+- 건물 높이 = 리뷰 수 / 색상 = 평점 (금 → 빨강)
+- 건물 옆 보석(octahedron) 아이콘: 주차/휠체어/라이브뮤직/강아지/칵테일 등 특성 표시
+- Trending 식당 → 주황색 빔 + 불꽃놀이
 
-```bash
-cd motzip-app
-npm run lint
-```
+### 음성 검색
+- 마이크 버튼 꾹 누르고 말하기 → 손 떼면 전송
+- ElevenLabs Scribe STT → Ollama LLM 필터 추출 → Google Places 필터링 → ElevenLabs TTS 응답
+- 예시 쿼리: *"인당 30불 이하 이탈리안 15분 내"*, *"주차 가능한 데이트 식당"*
+- 결과: 조건 맞는 건물만 남고 나머지는 땅속으로 꺼짐 + 파란 스포트라이트
 
-### Server
+### Twilio 전화 예약
+- 식당 클릭 → "예약 / 대기시간 전화 문의" 버튼 (전화번호 있는 식당만 표시)
+- Twilio가 식당에 전화 → 예약 가능 여부/대기시간 음성으로 문의
+- LLM이 응답 분석 → 앱에 결과 표시 (예약 가능 여부 + 대기 시간)
 
-With the server running:
+---
 
-```bash
-curl http://localhost:8000/health
+## API 엔드포인트
 
-curl -X POST http://localhost:8000/api/search \
-  -H "Content-Type: application/json" \
-  -d '{"query":"spicy seafood near the waterfront"}'
-```
+| Method | Path | 설명 |
+|--------|------|------|
+| GET | `/api/restaurants` | 주변 식당 목록 (Google Places) |
+| POST | `/api/voice-search` | 음성 파일 → 필터링된 식당 목록 + TTS 응답 |
+| POST | `/api/call-restaurant` | Twilio 전화 시작 |
+| GET | `/api/call-result/{call_sid}` | 전화 결과 폴링 |
+| POST | `/api/search` | 텍스트 자연어 → 구조화 필터 (Ollama) |
+| POST | `/api/analyze-reviews` | 리뷰 분석 (Ollama) |
+| GET | `/health` | Ollama 연결 상태 확인 |
 
-Full endpoint reference: [`motzip-server/README.md`](./motzip-server/README.md).
+---
 
-### Ollama
+## Twilio Trial 계정 제한 사항
 
-```bash
-curl http://localhost:11434
-# → "Ollama is running"
-```
+Trial 계정은 [Verified Caller IDs](https://console.twilio.com/phone-numbers/verified)에 등록된 번호로만 전화 가능.
+실제 레스토랑 전화 테스트는 계정 업그레이드 후 `TWILIO_TEST_TO` 환경변수를 비워두면 됨.
+
+---
+
+## 3D 모델 파이프라인 (motzip-3d)
+
+사전 빌드된 모델이 `motzip-app/public/models/`에 포함되어 있어 별도 실행 불필요.
+모델 재생성이 필요한 경우 [`motzip-3d/README.md`](./motzip-3d/README.md) 참고.
