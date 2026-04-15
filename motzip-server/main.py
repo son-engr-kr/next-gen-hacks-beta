@@ -852,6 +852,7 @@ class CallRestaurantRequest(BaseModel):
     phone: str
     party_size: int = 2
     time_preference: str = "as soon as possible"
+    custom_question: str = ""  # 유저가 직접 입력한 질문 (한/영 모두 가능)
 
 
 class CallRestaurantResponse(BaseModel):
@@ -876,13 +877,42 @@ async def call_restaurant(body: CallRestaurantRequest):
         raise HTTPException(status_code=503, detail="Twilio credentials not configured")
 
     from twilio.rest import Client as TwilioClient  # type: ignore
+    import urllib.parse
     client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+    # LLM으로 유저 질문을 자연스러운 전화 스크립트로 변환
+    greeting_script = ""
+    if body.custom_question.strip():
+        try:
+            async with httpx.AsyncClient() as client_http:
+                r = await client_http.post(
+                    f"{OLLAMA_URL}/api/generate",
+                    json={
+                        "model": MODEL,
+                        "prompt": body.custom_question,
+                        "system": (
+                            "Convert the user's casual question into a polite, natural phone call script "
+                            "for calling a restaurant. Write only the script text (1-2 sentences, English). "
+                            "Be concise and friendly. Do not add any explanation."
+                        ),
+                        "stream": False,
+                        "options": {"temperature": 0.3, "num_predict": 150},
+                    },
+                    timeout=15,
+                )
+                r.raise_for_status()
+                greeting_script = r.json()["response"].strip()
+                print(f"[twilio] custom greeting: {greeting_script}")
+        except Exception as e:
+            print(f"[twilio] LLM greeting error: {e}")
+            greeting_script = body.custom_question  # fallback: 그대로 사용
 
     twiml_url = (
         f"{NGROK_URL}/api/twilio/voice"
-        f"?restaurant_name={body.restaurant_name.replace(' ', '+')}"
+        f"?restaurant_name={urllib.parse.quote(body.restaurant_name)}"
         f"&party_size={body.party_size}"
-        f"&time_preference={body.time_preference.replace(' ', '+')}"
+        f"&time_preference={urllib.parse.quote(body.time_preference)}"
+        + (f"&greeting_script={urllib.parse.quote(greeting_script)}" if greeting_script else "")
     )
 
     to_number = TWILIO_TEST_TO if TWILIO_TEST_TO else body.phone
@@ -912,23 +942,27 @@ async def twilio_voice(
     restaurant_name: str = "the restaurant",
     party_size: int = 2,
     time_preference: str = "as soon as possible",
+    greeting_script: str = "",
 ):
     """TwiML handler — called by Twilio when the restaurant picks up."""
     from fastapi.responses import PlainTextResponse
 
-    greeting = (
-        f"Hello! I'm calling on behalf of a customer who would like to make a reservation "
-        f"or ask about the current wait time for a party of {party_size}, {time_preference}. "
-        f"Could you please let me know if a reservation is available or what the current wait time is?"
-    )
+    if greeting_script.strip():
+        greeting = greeting_script.strip()
+    else:
+        greeting = (
+            f"Hello! I'm calling on behalf of a customer who would like to make a reservation "
+            f"or ask about the current wait time for a party of {party_size}, {time_preference}. "
+            f"Could you please let me know if a reservation is available or what the current wait time is?"
+        )
 
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Gather input="speech" action="{NGROK_URL}/api/twilio/gather" method="POST"
           speechTimeout="auto" timeout="10" language="en-US ko-KR">
-    <Say voice="Polly.Joanna">{greeting}</Say>
+    <Say voice="Polly.Joanna-Neural">{greeting}</Say>
   </Gather>
-  <Say voice="Polly.Joanna">I did not receive a response. Thank you for your time. Goodbye.</Say>
+  <Say voice="Polly.Joanna-Neural">I did not receive a response. Thank you for your time. Goodbye.</Say>
 </Response>"""
 
     return PlainTextResponse(content=twiml, media_type="application/xml")
@@ -982,7 +1016,7 @@ async def twilio_gather(
     farewell = "Thank you so much for the information! Have a great day. Goodbye."
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Joanna">{farewell}</Say>
+  <Say voice="Polly.Joanna-Neural">{farewell}</Say>
   <Hangup/>
 </Response>"""
 

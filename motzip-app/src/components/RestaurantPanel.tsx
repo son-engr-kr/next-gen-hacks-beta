@@ -58,6 +58,7 @@ export default function RestaurantPanel({ restaurant, onClose }: Props) {
   const [callPhase, setCallPhase] = useState<CallPhase>("idle");
   const [callResult, setCallResult] = useState<CallResult | null>(null);
   const [callError, setCallError] = useState("");
+  const [customQuestion, setCustomQuestion] = useState("");
 
   const handleCall = async () => {
     if (!restaurant.phone) return;
@@ -75,6 +76,7 @@ export default function RestaurantPanel({ restaurant, onClose }: Props) {
           phone: restaurant.phone,
           party_size: 2,
           time_preference: "as soon as possible",
+          custom_question: customQuestion.trim(),
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -171,7 +173,18 @@ export default function RestaurantPanel({ restaurant, onClose }: Props) {
 
           {/* Twilio Call section */}
           {restaurant.phone && (
-            <div className="pt-1">
+            <div className="pt-1 space-y-2">
+              {/* 커스텀 질문 입력 */}
+              <div className="relative">
+                <input
+                  type="text"
+                  value={customQuestion}
+                  onChange={(e) => setCustomQuestion(e.target.value)}
+                  placeholder="궁금한 것 입력 (예: 채식 메뉴 있어요?)"
+                  disabled={callPhase === "calling"}
+                  className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-[12px] text-gray-300 placeholder-gray-600 focus:outline-none focus:border-violet-500/40 transition-colors"
+                />
+              </div>
               <button
                 onClick={handleCall}
                 disabled={callPhase === "calling"}
