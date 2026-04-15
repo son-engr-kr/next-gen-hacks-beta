@@ -670,29 +670,31 @@ async def voice_search(
     audio: UploadFile = File(...),
     user_lat: float = Form(42.355),
     user_lng: float = Form(-71.058),
+    text_query: str = Form(""),
 ):
-    """Full pipeline: ElevenLabs STT → Ollama LLM filter extraction → Places search → filter → ElevenLabs TTS."""
+    """Full pipeline: (STT or text) → Ollama LLM filter extraction → Places search → filter → ElevenLabs TTS."""
 
-    # ── Step 1: ElevenLabs STT ────────────────────────────────────────────────
-    raw_audio = await audio.read()
-    transcript = ""
+    # ── Step 1: transcript 확보 (텍스트 직접 입력 or ElevenLabs STT) ──────────
+    transcript = text_query.strip()
 
-    if ELEVENLABS_API_KEY and raw_audio:
-        try:
-            async with httpx.AsyncClient() as client:
-                r = await client.post(
-                    "https://api.elevenlabs.io/v1/speech-to-text",
-                    headers={"xi-api-key": ELEVENLABS_API_KEY},
-                    files={"file": (audio.filename or "audio.webm", raw_audio, audio.content_type or "audio/webm")},
-                    data={"model_id": "scribe_v1"},
-                    timeout=30,
-                )
-                if r.status_code == 200:
-                    transcript = r.json().get("text", "")
-                else:
-                    print(f"[voice] STT error {r.status_code}: {r.text}")
-        except Exception as e:
-            print(f"[voice] STT error: {e}")
+    if not transcript:
+        raw_audio = await audio.read()
+        if ELEVENLABS_API_KEY and raw_audio:
+            try:
+                async with httpx.AsyncClient() as client:
+                    r = await client.post(
+                        "https://api.elevenlabs.io/v1/speech-to-text",
+                        headers={"xi-api-key": ELEVENLABS_API_KEY},
+                        files={"file": (audio.filename or "audio.webm", raw_audio, audio.content_type or "audio/webm")},
+                        data={"model_id": "scribe_v1"},
+                        timeout=30,
+                    )
+                    if r.status_code == 200:
+                        transcript = r.json().get("text", "")
+                    else:
+                        print(f"[voice] STT error {r.status_code}: {r.text}")
+            except Exception as e:
+                print(f"[voice] STT error: {e}")
 
     if not transcript:
         return VoiceSearchResponse(transcript="", filters=VoiceFilters(), restaurants=[], audio_base64="")

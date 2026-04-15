@@ -20,6 +20,7 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
   const [results, setResults] = useState<Restaurant[]>([]);
   const [responseText, setResponseText] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
+  const [textInput, setTextInput] = useState("");
 
   const mediaRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -78,6 +79,63 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
     }
   }, []);
 
+  const submitText = async (text: string) => {
+    if (!text.trim()) return;
+    setPhase("processing");
+    setTranscript("");
+    setResults([]);
+    setResponseText("");
+    setErrorMsg("");
+    try {
+      const form = new FormData();
+      // 빈 오디오 blob (서버에서 text_query 우선)
+      form.append("audio", new Blob([], { type: "audio/webm" }), "empty.webm");
+      form.append("text_query", text.trim());
+      form.append("user_lat", String(userLat));
+      form.append("user_lng", String(userLng));
+      await processForm(form);
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : "오류가 발생했어요.");
+      setPhase("error");
+    }
+  };
+
+  const processForm = async (form: FormData) => {
+    const res = await fetch(`${SERVER_URL}/api/voice-search`, {
+      method: "POST",
+      body: form,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    setTranscript(data.transcript || "");
+    setResults(data.restaurants || []);
+
+    const matched = data.restaurants?.length ?? 0;
+    if (matched > 0) {
+      const top3 = data.restaurants.slice(0, 3).map((r: Restaurant) => r.name).join(", ");
+      setResponseText(`${matched}곳 발견: ${top3}${matched > 3 ? ` 외 ${matched - 3}곳` : ""}`);
+    } else {
+      setResponseText("조건에 맞는 식당을 찾지 못했어요.");
+    }
+
+    onResults(data.restaurants || []);
+
+    if (data.audio_base64) {
+      const bytes = atob(data.audio_base64);
+      const buf = new Uint8Array(bytes.length);
+      for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
+      const audioBlob = new Blob([buf], { type: "audio/mpeg" });
+      const url = URL.createObjectURL(audioBlob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.play().catch(() => {});
+      audio.onended = () => URL.revokeObjectURL(url);
+    }
+
+    setPhase("done");
+  };
+
   const submitAudio = async (blob: Blob, mimeType: string) => {
     setPhase("processing");
     const ext = mimeType.includes("ogg") ? "ogg" : "webm";
@@ -86,43 +144,7 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
       form.append("audio", blob, `voice.${ext}`);
       form.append("user_lat", String(userLat));
       form.append("user_lng", String(userLng));
-
-      const res = await fetch(`${SERVER_URL}/api/voice-search`, {
-        method: "POST",
-        body: form,
-      });
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-
-      setTranscript(data.transcript || "");
-      setResults(data.restaurants || []);
-
-      // Build response text for display
-      const matched = data.restaurants?.length ?? 0;
-      if (matched > 0) {
-        const top3 = data.restaurants.slice(0, 3).map((r: Restaurant) => r.name).join(", ");
-        setResponseText(`${matched}곳 발견: ${top3}${matched > 3 ? ` 외 ${matched - 3}곳` : ""}`);
-      } else {
-        setResponseText("조건에 맞는 식당을 찾지 못했어요.");
-      }
-
-      onResults(data.restaurants || []);
-
-      // Play TTS audio if available
-      if (data.audio_base64) {
-        const bytes = atob(data.audio_base64);
-        const buf = new Uint8Array(bytes.length);
-        for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
-        const audioBlob = new Blob([buf], { type: "audio/mpeg" });
-        const url = URL.createObjectURL(audioBlob);
-        const audio = new Audio(url);
-        audioRef.current = audio;
-        audio.play().catch(() => {});
-        audio.onended = () => URL.revokeObjectURL(url);
-      }
-
-      setPhase("done");
+      await processForm(form);
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : "오류가 발생했어요.");
       setPhase("error");
@@ -185,6 +207,28 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
           )}
         </div>
       )}
+
+      {/* Text input row */}
+      <div className="flex items-center gap-2 w-[300px]">
+        <input
+          type="text"
+          value={textInput}
+          onChange={(e) => setTextInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !isProcessing) { submitText(textInput); setTextInput(""); } }}
+          disabled={isProcessing || isRecording}
+          placeholder="텍스트로 검색 (예: 주차 가능한 이탈리안)"
+          className="flex-1 bg-gray-900/80 backdrop-blur-xl border border-white/[0.08] rounded-full px-4 py-2 text-[12px] text-gray-300 placeholder-gray-600 focus:outline-none focus:border-violet-500/40 transition-colors"
+        />
+        <button
+          onClick={() => { if (textInput.trim()) { submitText(textInput); setTextInput(""); } }}
+          disabled={isProcessing || isRecording || !textInput.trim()}
+          className="w-8 h-8 rounded-full bg-violet-900/60 border border-violet-500/20 flex items-center justify-center text-violet-300 hover:bg-violet-800/60 disabled:opacity-30 transition-all"
+        >
+          <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/>
+          </svg>
+        </button>
+      </div>
 
       {/* Controls row */}
       <div className="flex items-center gap-3">
