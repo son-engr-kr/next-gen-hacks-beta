@@ -1,48 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Restaurant, categoryEmoji } from "@/types/restaurant";
-
-const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:8000";
-
-type CallPhase = "idle" | "calling" | "done" | "error";
-
-interface QuestionAnswer {
-  value: boolean | null;
-  details: string;
-  wait_minutes?: number | null;
-}
-
-interface CallResult {
-  answers: Record<string, QuestionAnswer>;
-  raw_speech: string;
-}
-
-interface CardState {
-  phase: CallPhase;
-  result: CallResult | null;
-  error: string;
-  progress: string; // e.g. "asking 2/4" while the call is mid-flight
-}
-
-type Mode = "sequential" | "parallel";
-
-// Catalog must stay in sync with QUESTION_CATALOG in motzip-server/main.py.
-// "custom" is a synthetic key the server appends when a freeform question is provided.
-const QUESTION_CATALOG: { key: string; label: string }[] = [
-  { key: "reservation", label: "Reservation" },
-  { key: "wheelchair", label: "Wheelchair access" },
-  { key: "vegetarian", label: "Vegetarian options" },
-  { key: "outdoor", label: "Outdoor seating" },
-  { key: "dogs", label: "Allows dogs" },
-  { key: "parking", label: "Parking" },
-  { key: "music", label: "Live music" },
-];
-
-const QUESTION_LABEL_MAP: Record<string, string> = {
-  ...Object.fromEntries(QUESTION_CATALOG.map((q) => [q.key, q.label])),
-  custom: "Your question",
-};
+import { Restaurant } from "@/types/restaurant";
+import {
+  CallResult,
+  TERMINAL_FAILURES,
+  fetchCallResult,
+  initiateCall,
+} from "@/lib/callApi";
+import BatchCallControls, { Mode } from "./batch-call/BatchCallControls";
+import RestaurantCallCard, {
+  CardState,
+  CallPhase,
+} from "./batch-call/RestaurantCallCard";
 
 interface Props {
   restaurants: Restaurant[];
@@ -58,7 +28,15 @@ const initialState = (): CardState => ({
   progress: "",
 });
 
-export default function BatchCallPanel({ restaurants, selectedIds, onToggleSelection, onClose }: Props) {
+const POLL_INTERVAL_MS = 3000;
+const POLL_DEADLINE_MS = 240_000; // 4 min — fits multi-question conversations
+
+export default function BatchCallPanel({
+  restaurants,
+  selectedIds,
+  onToggleSelection,
+  onClose,
+}: Props) {
   const [states, setStates] = useState<Record<string, CardState>>({});
   const [mode, setMode] = useState<Mode>("sequential");
   const [globalQuestion, setGlobalQuestion] = useState("");
@@ -66,17 +44,8 @@ export default function BatchCallPanel({ restaurants, selectedIds, onToggleSelec
   const [batchRunning, setBatchRunning] = useState(false);
   const cancelRef = useRef(false);
 
-  const toggleQuestionKey = (key: string) => {
-    setAskedKeys((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
-
-  // Reset card states when the restaurant list changes (new search).
-  // Guard against parent passing same content with new array reference.
+  // Reset card states when the restaurant list itself changes (new search).
+  // Guard against parent passing same content with a new array reference.
   useEffect(() => {
     setStates((prev) => {
       const prevIds = Object.keys(prev).sort().join(",");
@@ -88,17 +57,29 @@ export default function BatchCallPanel({ restaurants, selectedIds, onToggleSelec
     cancelRef.current = false;
   }, [restaurants]);
 
-  // Stop in-flight polling on unmount
+  // Stop in-flight polling on unmount (e.g. user closes the panel mid-batch).
   useEffect(() => () => {
     cancelRef.current = true;
   }, []);
 
   const updateCard = (id: string, patch: Partial<CardState>) => {
-    setStates((prev) => ({ ...prev, [id]: { ...(prev[id] ?? initialState()), ...patch } }));
+    setStates((prev) => ({
+      ...prev,
+      [id]: { ...(prev[id] ?? initialState()), ...patch },
+    }));
+  };
+
+  const toggleQuestionKey = (key: string) => {
+    setAskedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   };
 
   const callable = restaurants.filter((r) => !!r.phone);
-  const selectedCallableIds = callable.filter((r) => selectedIds.has(r.id)).map((r) => r.id);
+  const selectedCallable = callable.filter((r) => selectedIds.has(r.id));
   const allCallableSelected =
     callable.length > 0 && callable.every((r) => selectedIds.has(r.id));
 
@@ -110,36 +91,30 @@ export default function BatchCallPanel({ restaurants, selectedIds, onToggleSelec
     }
   };
 
+  const setCallingPhase = (id: string) =>
+    updateCard(id, { phase: "calling" as CallPhase, result: null, error: "", progress: "" });
+
   const runOneCall = async (restaurant: Restaurant) => {
     if (!restaurant.phone) return;
-    updateCard(restaurant.id, { phase: "calling", result: null, error: "" });
+    setCallingPhase(restaurant.id);
 
     try {
-      const res = await fetch(`${SERVER_URL}/api/call-restaurant`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          restaurant_name: restaurant.name,
-          phone: restaurant.phone,
-          party_size: 2,
-          time_preference: "as soon as possible",
-          questions: Array.from(askedKeys),
-          custom_question: globalQuestion.trim(),
-        }),
+      const { call_sid } = await initiateCall({
+        restaurant_name: restaurant.name,
+        phone: restaurant.phone,
+        questions: Array.from(askedKeys),
+        custom_question: globalQuestion.trim(),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const { call_sid } = await res.json();
 
-      // Per-question iteration takes longer than a single-shot call. Allow up
-      // to 4 minutes for the full conversation.
-      const deadline = Date.now() + 240_000;
+      const deadline = Date.now() + POLL_DEADLINE_MS;
       while (Date.now() < deadline) {
         if (cancelRef.current) return;
-        await new Promise((r) => setTimeout(r, 3000));
-        const poll = await fetch(`${SERVER_URL}/api/call-result/${call_sid}`);
-        if (!poll.ok) continue;
-        const data = await poll.json();
-        // Stream partial answers + progress while the call is still going.
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+
+        const data: CallResult | null = await fetchCallResult(call_sid);
+        if (!data) continue;
+
+        // Stream partial answers + progress while the call is going.
         const partial: Partial<CardState> = {};
         if (data.answers && Object.keys(data.answers).length > 0) {
           partial.result = data;
@@ -147,15 +122,17 @@ export default function BatchCallPanel({ restaurants, selectedIds, onToggleSelec
         if (typeof data.status === "string" && data.status.startsWith("asking")) {
           partial.progress = data.status;
         }
-        if (Object.keys(partial).length > 0) {
-          updateCard(restaurant.id, partial);
-        }
+        if (Object.keys(partial).length > 0) updateCard(restaurant.id, partial);
+
         if (data.status === "completed") {
           updateCard(restaurant.id, { phase: "done", result: data, progress: "" });
           return;
         }
-        if (["failed", "busy", "no-answer", "canceled"].includes(data.status)) {
-          updateCard(restaurant.id, { phase: "error", error: `Call failed: ${data.status}` });
+        if (TERMINAL_FAILURES.includes(data.status)) {
+          updateCard(restaurant.id, {
+            phase: "error",
+            error: `Call failed: ${data.status}`,
+          });
           return;
         }
       }
@@ -169,18 +146,16 @@ export default function BatchCallPanel({ restaurants, selectedIds, onToggleSelec
   };
 
   const runBatch = async () => {
-    if (selectedCallableIds.length === 0 || batchRunning) return;
+    if (selectedCallable.length === 0 || batchRunning) return;
     setBatchRunning(true);
     cancelRef.current = false;
 
-    const queue = callable.filter((r) => selectedIds.has(r.id));
-
-    // Fake-parallel: visually mark all selected as "calling" up front,
-    // even though we still dial them sequentially under the hood.
+    // Fake-parallel: visually mark all selected as "calling" up front, even
+    // though we still dial them sequentially under the hood (single phone).
     if (mode === "parallel") {
       setStates((prev) => {
         const next = { ...prev };
-        for (const r of queue) {
+        for (const r of selectedCallable) {
           next[r.id] = {
             ...(next[r.id] ?? initialState()),
             phase: "calling",
@@ -192,11 +167,10 @@ export default function BatchCallPanel({ restaurants, selectedIds, onToggleSelec
       });
     }
 
-    for (const r of queue) {
+    for (const r of selectedCallable) {
       if (cancelRef.current) break;
       await runOneCall(r);
     }
-
     setBatchRunning(false);
   };
 
@@ -217,269 +191,33 @@ export default function BatchCallPanel({ restaurants, selectedIds, onToggleSelec
           <p className="text-[11px] text-gray-500 mt-0.5">{callable.length} callable</p>
         </div>
 
-        {/* Controls */}
-        <div className="px-5 pb-3 space-y-2.5 border-b border-white/[0.04]">
-          {/* Question checklist */}
-          <div>
-            <p className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1.5">
-              What to ask
-            </p>
-            <div className="flex flex-wrap gap-1.5">
-              {QUESTION_CATALOG.map((q) => {
-                const checked = askedKeys.has(q.key);
-                return (
-                  <button
-                    key={q.key}
-                    onClick={() => toggleQuestionKey(q.key)}
-                    disabled={batchRunning}
-                    className={`px-2.5 py-1 rounded-full text-[11px] font-medium border transition-all flex items-center gap-1 ${
-                      checked
-                        ? "bg-violet-700/40 border-violet-500/40 text-violet-100"
-                        : "bg-white/[0.03] border-white/[0.06] text-gray-400 hover:text-gray-200 hover:border-white/[0.15]"
-                    } disabled:opacity-50`}
-                  >
-                    <span className={`w-3 h-3 rounded border flex items-center justify-center ${
-                      checked ? "bg-violet-500 border-violet-500" : "border-white/20"
-                    }`}>
-                      {checked && (
-                        <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                        </svg>
-                      )}
-                    </span>
-                    {q.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-          <input
-            type="text"
-            value={globalQuestion}
-            onChange={(e) => setGlobalQuestion(e.target.value)}
-            placeholder="Or write a custom question..."
-            disabled={batchRunning}
-            className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-[12px] text-gray-300 placeholder-gray-600 focus:outline-none focus:border-violet-500/40 transition-colors disabled:opacity-50"
-          />
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">
-              Mode
-            </span>
-            <div className="flex bg-white/[0.04] rounded-lg p-0.5 border border-white/[0.05]">
-              <button
-                onClick={() => setMode("sequential")}
-                disabled={batchRunning}
-                className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-all ${
-                  mode === "sequential"
-                    ? "bg-violet-700/60 text-white"
-                    : "text-gray-500 hover:text-gray-300"
-                } disabled:opacity-50`}
-              >
-                Sequential
-              </button>
-              <button
-                onClick={() => setMode("parallel")}
-                disabled={batchRunning}
-                className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-all ${
-                  mode === "parallel"
-                    ? "bg-violet-700/60 text-white"
-                    : "text-gray-500 hover:text-gray-300"
-                } disabled:opacity-50`}
-              >
-                Parallel
-              </button>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={toggleAll}
-              disabled={callable.length === 0 || batchRunning}
-              className="text-[11px] text-gray-400 hover:text-white px-2 py-1 rounded-md hover:bg-white/[0.04] disabled:opacity-30 transition"
-            >
-              {allCallableSelected ? "Deselect all" : "Select all"}
-            </button>
-            <button
-              onClick={runBatch}
-              disabled={
-                selectedCallableIds.length === 0 ||
-                batchRunning ||
-                (askedKeys.size === 0 && !globalQuestion.trim())
-              }
-              title={
-                askedKeys.size === 0 && !globalQuestion.trim()
-                  ? "Pick at least one question or write a custom one"
-                  : ""
-              }
-              className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-[12px] font-semibold transition-all bg-violet-900/50 border border-violet-500/20 text-violet-300 hover:bg-violet-800/50 hover:text-violet-200 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {batchRunning ? (
-                <>
-                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    />
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8v8H4z"
-                    />
-                  </svg>
-                  Calling in progress...
-                </>
-              ) : (
-                <>📞 Call {selectedCallableIds.length} selected</>
-              )}
-            </button>
-          </div>
-        </div>
+        <BatchCallControls
+          askedKeys={askedKeys}
+          onToggleQuestionKey={toggleQuestionKey}
+          globalQuestion={globalQuestion}
+          onGlobalQuestionChange={setGlobalQuestion}
+          mode={mode}
+          onModeChange={setMode}
+          allCallableSelected={allCallableSelected}
+          onToggleAll={toggleAll}
+          selectedCount={selectedCallable.length}
+          callableCount={callable.length}
+          batchRunning={batchRunning}
+          onRunBatch={runBatch}
+        />
 
         {/* Cards */}
         <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
-          {restaurants.map((r) => {
-            const s = states[r.id] ?? initialState();
-            const hasPhone = !!r.phone;
-            const isSelected = selectedIds.has(r.id);
-            return (
-              <div
-                key={r.id}
-                data-restaurant-id={r.id}
-                className={`rounded-2xl border transition-colors ${
-                  isSelected
-                    ? "bg-violet-900/15 border-violet-500/25"
-                    : "bg-white/[0.02] border-white/[0.04]"
-                } ${!hasPhone ? "opacity-50" : ""}`}
-              >
-                <div className="flex items-start gap-3 p-3">
-                  <button
-                    onClick={() => hasPhone && onToggleSelection(r.id)}
-                    disabled={!hasPhone || batchRunning}
-                    className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all flex-shrink-0 ${
-                      isSelected
-                        ? "bg-violet-500 border-violet-500 text-white"
-                        : "border-white/20 hover:border-violet-400/60"
-                    } ${!hasPhone || batchRunning ? "cursor-not-allowed" : "cursor-pointer"}`}
-                  >
-                    {isSelected && (
-                      <svg
-                        className="w-3 h-3"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="3"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M5 13l4 4L19 7"
-                        />
-                      </svg>
-                    )}
-                  </button>
-
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg leading-none">
-                        {categoryEmoji[r.category]}
-                      </span>
-                      <span className="text-[13px] font-semibold text-white truncate">
-                        {r.name}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 mt-1 text-[11px] text-gray-500">
-                      <span className="text-amber-400">★</span>
-                      <span>{r.rating.toFixed(1)}</span>
-                      <span className="text-gray-700">·</span>
-                      <span>{r.reviewCount} reviews</span>
-                      {!hasPhone && (
-                        <span className="text-gray-600 ml-auto">No phone</span>
-                      )}
-                    </div>
-
-                    {s.phase === "calling" && (
-                      <div className="mt-2 flex items-center gap-2 text-[11px] text-violet-300">
-                        <svg
-                          className="w-3 h-3 animate-spin"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                        >
-                          <circle
-                            className="opacity-25"
-                            cx="12"
-                            cy="12"
-                            r="10"
-                            stroke="currentColor"
-                            strokeWidth="4"
-                          />
-                          <path
-                            className="opacity-75"
-                            fill="currentColor"
-                            d="M4 12a8 8 0 018-8v8H4z"
-                          />
-                        </svg>
-                        {s.progress || "Calling..."}
-                      </div>
-                    )}
-
-                    {s.phase === "error" && (
-                      <p className="mt-2 text-[11px] text-rose-400">{s.error}</p>
-                    )}
-
-                    {(s.phase === "done" || (s.phase === "calling" && s.result)) &&
-                      s.result && (
-                        <div className="mt-2 rounded-xl bg-white/[0.03] border border-white/[0.05] p-2.5 space-y-1.5 text-[11px]">
-                          {Object.entries(s.result.answers).map(([key, ans]) => {
-                            const label = QUESTION_LABEL_MAP[key] ?? key;
-                            const icon =
-                              ans.value === true ? "✓" : ans.value === false ? "✗" : "?";
-                            const iconCls =
-                              ans.value === true
-                                ? "text-emerald-400"
-                                : ans.value === false
-                                ? "text-rose-400"
-                                : "text-gray-500";
-                            return (
-                              <div key={key} className="flex items-start gap-2">
-                                <span
-                                  className={`${iconCls} font-bold w-3 text-center mt-0.5 flex-shrink-0`}
-                                >
-                                  {icon}
-                                </span>
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-gray-200 font-medium">{label}</span>
-                                    {key === "reservation" &&
-                                      ans.wait_minutes != null &&
-                                      ans.wait_minutes > 0 && (
-                                        <span className="text-amber-300 text-[10px] font-semibold">
-                                          ~{ans.wait_minutes} min wait
-                                        </span>
-                                      )}
-                                  </div>
-                                  {ans.details && (
-                                    <p className="text-gray-500 leading-relaxed">
-                                      {ans.details}
-                                    </p>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
-                          {s.phase === "done" &&
-                            Object.keys(s.result.answers).length === 0 && (
-                              <p className="text-gray-500 italic">No structured answers parsed.</p>
-                            )}
-                        </div>
-                      )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+          {restaurants.map((r) => (
+            <RestaurantCallCard
+              key={r.id}
+              restaurant={r}
+              state={states[r.id] ?? initialState()}
+              selected={selectedIds.has(r.id)}
+              batchRunning={batchRunning}
+              onToggleSelection={onToggleSelection}
+            />
+          ))}
         </div>
 
         <div className="h-px bg-gradient-to-r from-transparent via-white/[0.04] to-transparent" />
