@@ -509,6 +509,8 @@ export function createBuildingCustomLayer(
         const topZ = buildingTopZMap.get(r.id) ?? 50 * s;
         addSpotlight(r, topZ);
       } else {
+        // Sink completely. Render loop hides the group entirely once it
+        // shrinks below threshold so the bottom face also disappears.
         targetScales[i] = 0;
       }
     });
@@ -982,13 +984,17 @@ export function createBuildingCustomLayer(
       updatePlanes(t);
 
       // ── Voice filter: animate building scale (sink / vanish / rise) ────────
+      // VISIBLE_THRESHOLD: once the lerp gets close enough to zero, hide the
+      // entire group so the bottom face/footprint vanishes too. When un-
+      // filtering we restore visibility before animating back up.
+      const VISIBLE_THRESHOLD = 0.02;
       buildingGroups.forEach((group, i) => {
         const target  = targetScales[i]  ?? 1.0;
         const current = currentScales[i] ?? 1.0;
         const next    = current + (target - current) * 0.08; // smooth lerp
         currentScales[i] = next;
-        group.scale.z = Math.max(next, 0.001);
-        group.visible  = next > 0.01;
+        group.scale.z = Math.max(next, 0.0001); // three.js dislikes scale=0
+        group.visible = next > VISIBLE_THRESHOLD || target > VISIBLE_THRESHOLD;
       });
 
       // Pulse spotlight beams
@@ -1002,7 +1008,9 @@ export function createBuildingCustomLayer(
 
       // Bob food icons (hidden when their building is filtered out)
       foodIconGroups.forEach(({ outer, baseZ, restaurantIdx }, i) => {
-        const visible = (currentScales[restaurantIdx] ?? 1) > 0.05;
+        const buildingScale = currentScales[restaurantIdx] ?? 1;
+        const buildingTarget = targetScales[restaurantIdx] ?? 1;
+        const visible = buildingScale > VISIBLE_THRESHOLD || buildingTarget > VISIBLE_THRESHOLD;
         outer.visible = visible;
         if (visible) outer.position.z = baseZ + Math.sin(t * 1.5 + i * 0.8) * 5 * s;
       });
@@ -1010,7 +1018,9 @@ export function createBuildingCustomLayer(
       // Float feature icons (vertical planes; bob along Z, billboard via map bearing).
       const bearingRad = (map.getBearing() * Math.PI) / 180;
       featureMarkers.forEach(({ mesh, baseZ, bobOffset, restaurantIdx }) => {
-        const visible = (currentScales[restaurantIdx] ?? 1) > 0.05;
+        const buildingScale = currentScales[restaurantIdx] ?? 1;
+        const buildingTarget = targetScales[restaurantIdx] ?? 1;
+        const visible = buildingScale > VISIBLE_THRESHOLD || buildingTarget > VISIBLE_THRESHOLD;
         mesh.visible = visible;
         if (visible) {
           mesh.position.z = baseZ + Math.sin(t * 1.2 + bobOffset) * 1.8 * s;
@@ -1020,7 +1030,9 @@ export function createBuildingCustomLayer(
 
       // Pulse trending beacons (hidden when their building is filtered out)
       trendingBeacons.forEach(({ group, restaurantIdx }, i) => {
-        const visible = (currentScales[restaurantIdx] ?? 1) > 0.05;
+        const buildingScale = currentScales[restaurantIdx] ?? 1;
+        const buildingTarget = targetScales[restaurantIdx] ?? 1;
+        const visible = buildingScale > VISIBLE_THRESHOLD || buildingTarget > VISIBLE_THRESHOLD;
         group.visible = visible;
         if (!visible) return;
         group.children.forEach((child, ci) => {

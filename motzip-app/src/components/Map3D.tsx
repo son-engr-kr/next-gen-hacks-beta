@@ -7,6 +7,7 @@ import { restaurants as staticRestaurants } from "@/data/restaurants";
 import { Restaurant } from "@/types/restaurant";
 import { createBuildingCustomLayer } from "./BuildingLayer";
 import RestaurantPanel from "./RestaurantPanel";
+import BatchCallPanel from "./BatchCallPanel";
 import Fireworks from "./Fireworks";
 import VoiceSearch from "./VoiceSearch";
 
@@ -69,9 +70,31 @@ export default function Map3D() {
   const [dataSource, setDataSource] = useState<"loading" | "live" | "static">("loading");
   const [voiceResults, setVoiceResults] = useState<Restaurant[] | null>(null);
   const [iconFilters, setIconFilters] = useState<Set<IconFilterKey>>(new Set());
+  const [selectedForCall, setSelectedForCall] = useState<Set<string>>(new Set());
   const [userPosition, setUserPosition] = useState<{ lat: number; lng: number }>(
     { lat: DEFAULT_CENTER[1], lng: DEFAULT_CENTER[0] }
   );
+
+  // Refs let the once-registered map click handler read the latest values
+  // without having to re-bind on every state change.
+  const voiceResultsRef = useRef<Restaurant[] | null>(null);
+  const selectedForCallRef = useRef<Set<string>>(new Set());
+  useEffect(() => { voiceResultsRef.current = voiceResults; }, [voiceResults]);
+  useEffect(() => { selectedForCallRef.current = selectedForCall; }, [selectedForCall]);
+
+  // Reset selection whenever a fresh search returns
+  useEffect(() => {
+    setSelectedForCall(new Set());
+  }, [voiceResults]);
+
+  const toggleCallSelection = (id: string) => {
+    setSelectedForCall((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   // Track user GPS position for voice search
   useEffect(() => {
@@ -243,15 +266,28 @@ export default function Map3D() {
         },
       });
 
-      // Click handler
+      // Click handler. When the BatchCallPanel is up (voiceResults active and
+      // the clicked building is one of the matches), toggle its selection
+      // instead of opening the single-restaurant panel.
       map.on("click", "restaurant-hit", (e) => {
         if (!e.features || e.features.length === 0) return;
         const id = e.features[0].properties?.id;
         const r = restaurants.find((r) => r.id === id);
-        if (r) {
-          setSelected(r);
+        if (!r) return;
+
+        const vr = voiceResultsRef.current;
+        const matchInBatch = vr?.find((x) => x.id === r.id);
+        if (matchInBatch) {
+          // Only callable restaurants can be batch-selected; ignore the rest.
+          if (matchInBatch.phone) {
+            toggleCallSelection(r.id);
+          }
           map.flyTo({ center: [r.lng, r.lat], zoom: 16, pitch: 55, duration: 800 });
+          return;
         }
+
+        setSelected(r);
+        map.flyTo({ center: [r.lng, r.lat], zoom: 16, pitch: 55, duration: 800 });
       });
 
       map.on("mouseenter", "restaurant-hit", () => {
@@ -402,16 +438,23 @@ export default function Map3D() {
         </div>
       </div>
 
-      {selected && (
+      {voiceResults && voiceResults.length > 0 ? (
+        <BatchCallPanel
+          restaurants={voiceResults}
+          selectedIds={selectedForCall}
+          onToggleSelection={toggleCallSelection}
+          onClose={() => setVoiceResults(null)}
+        />
+      ) : selected ? (
         <RestaurantPanel restaurant={selected} onClose={() => setSelected(null)} />
-      )}
+      ) : null}
 
       {/* Voice filter active badge */}
       {voiceResults !== null && (
         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30">
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-violet-950/80 border border-violet-500/20 text-violet-300 text-[11px] font-semibold backdrop-blur-xl shadow-lg">
             <span className="text-violet-400">&#127908;</span>
-            음성 필터 적용됨 — {voiceResults.length}곳
+            Voice filter active — {voiceResults.length} places
           </div>
         </div>
       )}
