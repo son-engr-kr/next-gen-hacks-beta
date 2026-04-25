@@ -12,6 +12,22 @@ import VoiceSearch from "./VoiceSearch";
 
 const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:8000";
 
+type IconFilterKey =
+  | "trending" | "wheelchair"
+  | "parking_free" | "parking_paid" | "parking_valet"
+  | "live_music" | "dogs" | "cocktails";
+
+const ICON_FILTER_DEFS: { key: IconFilterKey; label: string; match: (r: Restaurant) => boolean }[] = [
+  { key: "trending",      label: "Trending",     match: (r) => r.isTrending },
+  { key: "wheelchair",    label: "Wheelchair",   match: (r) => !!r.isWheelchairAccessible },
+  { key: "parking_free",  label: "Free Parking", match: (r) => r.parkingType === "free" },
+  { key: "parking_paid",  label: "Paid Parking", match: (r) => r.parkingType === "paid" },
+  { key: "parking_valet", label: "Valet",        match: (r) => r.parkingType === "valet" },
+  { key: "live_music",    label: "Live Music",   match: (r) => !!r.hasLiveMusic },
+  { key: "dogs",          label: "Dogs OK",      match: (r) => !!r.allowsDogs },
+  { key: "cocktails",     label: "Cocktails",    match: (r) => !!r.servesCocktails },
+];
+
 function buildGeoJSON(restaurants: Restaurant[]) {
   return {
     type: "FeatureCollection" as const,
@@ -48,12 +64,11 @@ export default function Map3D() {
   const mapRef = useRef<maplibregl.Map | null>(null);
   const setFilterRef = useRef<((ids: Set<string> | null) => void) | null>(null);
   const [selected, setSelected] = useState<Restaurant | null>(null);
-  const [trendingScreenPositions, setTrendingScreenPositions] = useState<
-    { x: number; y: number }[]
-  >([]);
+  const [mapInstance, setMapInstance] = useState<maplibregl.Map | null>(null);
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [dataSource, setDataSource] = useState<"loading" | "live" | "static">("loading");
   const [voiceResults, setVoiceResults] = useState<Restaurant[] | null>(null);
+  const [iconFilters, setIconFilters] = useState<Set<IconFilterKey>>(new Set());
   const [userPosition, setUserPosition] = useState<{ lat: number; lng: number }>(
     { lat: DEFAULT_CENTER[1], lng: DEFAULT_CENTER[0] }
   );
@@ -107,15 +122,29 @@ export default function Map3D() {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Apply voice filter to 3D buildings
+  // Apply combined voice + icon filters to 3D buildings (intersection)
   useEffect(() => {
     if (!setFilterRef.current) return;
-    if (voiceResults === null) {
-      setFilterRef.current(null);
-    } else {
-      setFilterRef.current(new Set(voiceResults.map((r) => r.id)));
+    let ids: Set<string> | null = voiceResults
+      ? new Set(voiceResults.map((r) => r.id))
+      : null;
+    if (iconFilters.size > 0) {
+      const matchers = ICON_FILTER_DEFS.filter((d) => iconFilters.has(d.key)).map((d) => d.match);
+      const matchedIds = new Set(
+        restaurants.filter((r) => matchers.every((m) => m(r))).map((r) => r.id)
+      );
+      ids = ids === null ? matchedIds : new Set([...ids].filter((id) => matchedIds.has(id)));
     }
-  }, [voiceResults]);
+    setFilterRef.current(ids);
+  }, [voiceResults, iconFilters, restaurants]);
+
+  const toggleIconFilter = (k: IconFilterKey) => {
+    setIconFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k); else next.add(k);
+      return next;
+    });
+  };
 
   const trendingRestaurants = restaurants.filter((r) => r.isTrending);
 
@@ -133,30 +162,7 @@ export default function Map3D() {
 
     const map = new maplibregl.Map({
       container: mapContainer.current,
-      style: {
-        version: 8,
-        sources: {
-          carto: {
-            type: "raster",
-            tiles: [
-              "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-              "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-              "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-            ],
-            tileSize: 256,
-            attribution: "&copy; OpenStreetMap &copy; CARTO",
-          },
-        },
-        layers: [
-          {
-            id: "carto-tiles",
-            type: "raster",
-            source: "carto",
-            minzoom: 0,
-            maxzoom: 19,
-          },
-        ],
-      },
+      style: "https://tiles.openfreemap.org/styles/positron",
       center: DEFAULT_CENTER,
       zoom: 14.5,
       pitch: 50,
@@ -170,8 +176,53 @@ export default function Map3D() {
     (map.dragRotate as unknown as { enable(opts: { button: string }): void }).enable({ button: "right" });
 
     mapRef.current = map;
+    setMapInstance(map);
 
     map.on("load", () => {
+      // ── "Pastel Sunset" theme — storybook palette, all colors lifted toward cream ──
+      // Terrain: very soft pastels with warm undertone — parks now properly green
+      const muteFills: Record<string, string> = {
+        background:           "#fbf2dd",  // pastel cream
+        park:                 "#9ed6a0",  // vivid pastel green
+        landcover_grass:      "#b8e0b6",  // lighter green
+        landcover_wood:       "#7ec98a",  // deeper forest pastel
+        water:                "#c4dbd8",  // pastel mint
+        landuse_residential:  "#f3e7d0",  // soft peach-cream
+        landuse_commercial:   "#f3e6cf",
+        building:             "#ecd8be",  // pastel beige
+      };
+      for (const [id, color] of Object.entries(muteFills)) {
+        const lyr = map.getLayer(id);
+        if (!lyr) continue;
+        const prop = lyr.type === "background" ? "background-color" : "fill-color";
+        try {
+          map.setPaintProperty(id, prop, color);
+          if (lyr.type === "fill") map.setPaintProperty(id, "fill-opacity", 0.9);
+        } catch {}
+      }
+
+      // Roads/features: pastel rainbow within the sunset family
+      const vividLines: Record<string, string> = {
+        highway_motorway_inner:    "#f08a7a",  // pastel peach-coral
+        highway_motorway_casing:   "#cf7068",  // dusty coral
+        highway_motorway_subtle:   "#fab9a8",  // very soft coral
+        highway_major_inner:       "#f8c878",  // butter amber
+        highway_major_casing:      "#cd9658",  // toasted amber
+        highway_major_subtle:      "#fde2ad",  // soft butter
+        highway_minor:             "#eea4b8",  // soft pink
+        highway_path:              "#daa088",  // soft terracotta
+        railway:                   "#84c8c2",  // pastel teal
+        railway_transit:           "#c5a0c5",  // lavender
+        railway_service:           "#a8d8d2",  // light pastel teal
+        waterway:                  "#84c8c2",  // matches railway pastel teal
+      };
+      for (const [id, color] of Object.entries(vividLines)) {
+        if (!map.getLayer(id)) continue;
+        try {
+          map.setPaintProperty(id, "line-color", color);
+        } catch {}
+      }
+
       // Three.js custom layer for 3D buildings with textures
       const { layer: buildingLayer, setFilter } = createBuildingCustomLayer(map, restaurants);
       setFilterRef.current = setFilter;
@@ -210,25 +261,6 @@ export default function Map3D() {
         map.getCanvas().style.cursor = "";
       });
 
-      // Update trending firework positions
-      const updateFireworks = () => {
-        const canvas = map.getCanvas();
-        const positions = trendingRestaurants
-          .map((r) => {
-            const pt = map.project([r.lng, r.lat]);
-            return { x: pt.x, y: pt.y };
-          })
-          .filter(
-            (p) =>
-              p.x > 0 && p.y > 0 && p.x < canvas.clientWidth && p.y < canvas.clientHeight
-          );
-        setTrendingScreenPositions(positions);
-      };
-
-      updateFireworks();
-
-      map.on("moveend", updateFireworks);
-      map.on("move", updateFireworks);
     });
 
     // Navigation (zoom only, no compass)
@@ -251,8 +283,48 @@ export default function Map3D() {
 
   return (
     <div className="relative w-full h-full">
-      <div ref={mapContainer} className="w-full h-full" />
-      <Fireworks positions={trendingScreenPositions} />
+      <div
+        ref={mapContainer}
+        className="w-full h-full"
+      />
+
+      {/* Pastel ambient corners — barely there, just a hint of sunset gradient */}
+      <div
+        className="absolute inset-0 pointer-events-none z-10"
+        style={{
+          background:
+            "radial-gradient(ellipse 75% 65% at 100% 0%, rgba(255, 224, 178, 0.28) 0%, transparent 60%), radial-gradient(ellipse 70% 60% at 0% 0%, rgba(255, 196, 211, 0.22) 0%, transparent 60%), radial-gradient(ellipse 70% 60% at 0% 100%, rgba(178, 226, 222, 0.22) 0%, transparent 60%), radial-gradient(ellipse 70% 60% at 100% 100%, rgba(213, 188, 217, 0.20) 0%, transparent 60%)",
+        }}
+      />
+      {/* Soft cream horizon for 3D pitch depth */}
+      <div
+        className="absolute inset-0 pointer-events-none z-10"
+        style={{
+          background:
+            "linear-gradient(180deg, rgba(255, 226, 200, 0.32) 0%, rgba(255, 226, 200, 0.10) 12%, transparent 26%)",
+        }}
+      />
+      {/* Whisper-soft pastel vignette */}
+      <div
+        className="absolute inset-0 pointer-events-none z-10"
+        style={{
+          background:
+            "radial-gradient(ellipse 115% 100% at 50% 50%, transparent 70%, rgba(180, 130, 110, 0.16) 100%)",
+        }}
+      />
+      {/* Bottom city-glow accent */}
+      <div
+        className="absolute inset-x-0 bottom-0 h-40 pointer-events-none z-10"
+        style={{
+          background:
+            "linear-gradient(0deg, rgba(56, 189, 248, 0.08) 0%, transparent 100%)",
+        }}
+      />
+
+      <Fireworks
+        map={mapInstance}
+        lngLats={trendingRestaurants.map((r) => ({ lng: r.lng, lat: r.lat }))}
+      />
 
       {/* Data source badge */}
       {dataSource !== "loading" && (
@@ -299,15 +371,34 @@ export default function Map3D() {
             <div className="w-3 h-3 rounded-full bg-gray-700/60 border border-gray-500/40" />
             <span>Dim = Currently Closed</span>
           </div>
-          <p className="text-[9px] uppercase tracking-widest text-gray-600 font-bold pt-0.5 pb-0.5">Gems (beside building)</p>
-          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rotate-45 bg-orange-500" /><span>Trending</span></div>
-          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rotate-45 bg-sky-400" /><span>Wheelchair</span></div>
-          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rotate-45 bg-emerald-400" /><span>Free Parking</span></div>
-          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rotate-45 bg-blue-400" /><span>Paid Parking</span></div>
-          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rotate-45 bg-amber-400" /><span>Valet</span></div>
-          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rotate-45 bg-purple-400" /><span>Live Music</span></div>
-          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rotate-45 bg-lime-400" /><span>Dogs OK</span></div>
-          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rotate-45 bg-pink-400" /><span>Cocktails</span></div>
+          <div className="flex items-center justify-between pt-0.5 pb-0.5">
+            <p className="text-[9px] uppercase tracking-widest text-gray-600 font-bold">Filter by feature</p>
+            {iconFilters.size > 0 && (
+              <button
+                onClick={() => setIconFilters(new Set())}
+                className="text-[9px] uppercase tracking-widest text-violet-400 hover:text-violet-200 font-bold"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          {ICON_FILTER_DEFS.map(({ key, label }) => {
+            const active = iconFilters.has(key);
+            return (
+              <button
+                key={key}
+                onClick={() => toggleIconFilter(key)}
+                className={`flex items-center gap-2 w-full px-1.5 -mx-1.5 py-0.5 rounded transition ${
+                  active
+                    ? "bg-violet-500/20 text-violet-100 ring-1 ring-violet-400/30"
+                    : "text-gray-400 hover:bg-white/[0.04] hover:text-gray-200"
+                }`}
+              >
+                <img src={`/icons/${key}.svg`} alt="" className="w-3.5 h-3.5" />
+                <span>{label}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
