@@ -7,40 +7,73 @@ const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:8000"
 
 type CallPhase = "idle" | "calling" | "done" | "error";
 
+interface QuestionAnswer {
+  value: boolean | null;
+  details: string;
+  wait_minutes?: number | null;
+}
+
 interface CallResult {
-  can_reserve: boolean | null;
-  wait_minutes: number | null;
-  notes: string;
+  answers: Record<string, QuestionAnswer>;
   raw_speech: string;
 }
 
 interface CardState {
-  selected: boolean;
   phase: CallPhase;
   result: CallResult | null;
   error: string;
+  progress: string; // e.g. "asking 2/4" while the call is mid-flight
 }
 
 type Mode = "sequential" | "parallel";
 
+// Catalog must stay in sync with QUESTION_CATALOG in motzip-server/main.py.
+// "custom" is a synthetic key the server appends when a freeform question is provided.
+const QUESTION_CATALOG: { key: string; label: string }[] = [
+  { key: "reservation", label: "Reservation" },
+  { key: "wheelchair", label: "Wheelchair access" },
+  { key: "vegetarian", label: "Vegetarian options" },
+  { key: "outdoor", label: "Outdoor seating" },
+  { key: "dogs", label: "Allows dogs" },
+  { key: "parking", label: "Parking" },
+  { key: "music", label: "Live music" },
+];
+
+const QUESTION_LABEL_MAP: Record<string, string> = {
+  ...Object.fromEntries(QUESTION_CATALOG.map((q) => [q.key, q.label])),
+  custom: "Your question",
+};
+
 interface Props {
   restaurants: Restaurant[];
+  selectedIds: Set<string>;
+  onToggleSelection: (id: string) => void;
   onClose: () => void;
 }
 
 const initialState = (): CardState => ({
-  selected: false,
   phase: "idle",
   result: null,
   error: "",
+  progress: "",
 });
 
-export default function BatchCallPanel({ restaurants, onClose }: Props) {
+export default function BatchCallPanel({ restaurants, selectedIds, onToggleSelection, onClose }: Props) {
   const [states, setStates] = useState<Record<string, CardState>>({});
   const [mode, setMode] = useState<Mode>("sequential");
   const [globalQuestion, setGlobalQuestion] = useState("");
+  const [askedKeys, setAskedKeys] = useState<Set<string>>(new Set());
   const [batchRunning, setBatchRunning] = useState(false);
   const cancelRef = useRef(false);
+
+  const toggleQuestionKey = (key: string) => {
+    setAskedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   // Reset card states when the restaurant list changes (new search).
   // Guard against parent passing same content with new array reference.
@@ -64,27 +97,17 @@ export default function BatchCallPanel({ restaurants, onClose }: Props) {
     setStates((prev) => ({ ...prev, [id]: { ...(prev[id] ?? initialState()), ...patch } }));
   };
 
-  const toggleSelect = (id: string) => {
-    setStates((prev) => ({
-      ...prev,
-      [id]: { ...(prev[id] ?? initialState()), selected: !prev[id]?.selected },
-    }));
-  };
-
   const callable = restaurants.filter((r) => !!r.phone);
-  const selectedIds = callable.filter((r) => states[r.id]?.selected).map((r) => r.id);
+  const selectedCallableIds = callable.filter((r) => selectedIds.has(r.id)).map((r) => r.id);
   const allCallableSelected =
-    callable.length > 0 && callable.every((r) => states[r.id]?.selected);
+    callable.length > 0 && callable.every((r) => selectedIds.has(r.id));
 
   const toggleAll = () => {
-    const newVal = !allCallableSelected;
-    setStates((prev) => {
-      const next = { ...prev };
-      for (const r of callable) {
-        next[r.id] = { ...(next[r.id] ?? initialState()), selected: newVal };
-      }
-      return next;
-    });
+    const turnOn = !allCallableSelected;
+    for (const r of callable) {
+      const isSelected = selectedIds.has(r.id);
+      if (turnOn !== isSelected) onToggleSelection(r.id);
+    }
   };
 
   const runOneCall = async (restaurant: Restaurant) => {
@@ -100,21 +123,35 @@ export default function BatchCallPanel({ restaurants, onClose }: Props) {
           phone: restaurant.phone,
           party_size: 2,
           time_preference: "as soon as possible",
+          questions: Array.from(askedKeys),
           custom_question: globalQuestion.trim(),
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { call_sid } = await res.json();
 
-      const deadline = Date.now() + 60_000;
+      // Per-question iteration takes longer than a single-shot call. Allow up
+      // to 4 minutes for the full conversation.
+      const deadline = Date.now() + 240_000;
       while (Date.now() < deadline) {
         if (cancelRef.current) return;
         await new Promise((r) => setTimeout(r, 3000));
         const poll = await fetch(`${SERVER_URL}/api/call-result/${call_sid}`);
         if (!poll.ok) continue;
         const data = await poll.json();
+        // Stream partial answers + progress while the call is still going.
+        const partial: Partial<CardState> = {};
+        if (data.answers && Object.keys(data.answers).length > 0) {
+          partial.result = data;
+        }
+        if (typeof data.status === "string" && data.status.startsWith("asking")) {
+          partial.progress = data.status;
+        }
+        if (Object.keys(partial).length > 0) {
+          updateCard(restaurant.id, partial);
+        }
         if (data.status === "completed") {
-          updateCard(restaurant.id, { phase: "done", result: data });
+          updateCard(restaurant.id, { phase: "done", result: data, progress: "" });
           return;
         }
         if (["failed", "busy", "no-answer", "canceled"].includes(data.status)) {
@@ -132,11 +169,11 @@ export default function BatchCallPanel({ restaurants, onClose }: Props) {
   };
 
   const runBatch = async () => {
-    if (selectedIds.length === 0 || batchRunning) return;
+    if (selectedCallableIds.length === 0 || batchRunning) return;
     setBatchRunning(true);
     cancelRef.current = false;
 
-    const queue = restaurants.filter((r) => selectedIds.includes(r.id));
+    const queue = callable.filter((r) => selectedIds.has(r.id));
 
     // Fake-parallel: visually mark all selected as "calling" up front,
     // even though we still dial them sequentially under the hood.
@@ -182,11 +219,45 @@ export default function BatchCallPanel({ restaurants, onClose }: Props) {
 
         {/* Controls */}
         <div className="px-5 pb-3 space-y-2.5 border-b border-white/[0.04]">
+          {/* Question checklist */}
+          <div>
+            <p className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1.5">
+              What to ask
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {QUESTION_CATALOG.map((q) => {
+                const checked = askedKeys.has(q.key);
+                return (
+                  <button
+                    key={q.key}
+                    onClick={() => toggleQuestionKey(q.key)}
+                    disabled={batchRunning}
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-medium border transition-all flex items-center gap-1 ${
+                      checked
+                        ? "bg-violet-700/40 border-violet-500/40 text-violet-100"
+                        : "bg-white/[0.03] border-white/[0.06] text-gray-400 hover:text-gray-200 hover:border-white/[0.15]"
+                    } disabled:opacity-50`}
+                  >
+                    <span className={`w-3 h-3 rounded border flex items-center justify-center ${
+                      checked ? "bg-violet-500 border-violet-500" : "border-white/20"
+                    }`}>
+                      {checked && (
+                        <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </span>
+                    {q.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <input
             type="text"
             value={globalQuestion}
             onChange={(e) => setGlobalQuestion(e.target.value)}
-            placeholder="Extra question (e.g. any tables right now?)"
+            placeholder="Or write a custom question..."
             disabled={batchRunning}
             className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-[12px] text-gray-300 placeholder-gray-600 focus:outline-none focus:border-violet-500/40 transition-colors disabled:opacity-50"
           />
@@ -229,7 +300,16 @@ export default function BatchCallPanel({ restaurants, onClose }: Props) {
             </button>
             <button
               onClick={runBatch}
-              disabled={selectedIds.length === 0 || batchRunning}
+              disabled={
+                selectedCallableIds.length === 0 ||
+                batchRunning ||
+                (askedKeys.size === 0 && !globalQuestion.trim())
+              }
+              title={
+                askedKeys.size === 0 && !globalQuestion.trim()
+                  ? "Pick at least one question or write a custom one"
+                  : ""
+              }
               className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-[12px] font-semibold transition-all bg-violet-900/50 border border-violet-500/20 text-violet-300 hover:bg-violet-800/50 hover:text-violet-200 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {batchRunning ? (
@@ -252,7 +332,7 @@ export default function BatchCallPanel({ restaurants, onClose }: Props) {
                   Calling in progress...
                 </>
               ) : (
-                <>📞 Call {selectedIds.length} selected</>
+                <>📞 Call {selectedCallableIds.length} selected</>
               )}
             </button>
           </div>
@@ -263,26 +343,28 @@ export default function BatchCallPanel({ restaurants, onClose }: Props) {
           {restaurants.map((r) => {
             const s = states[r.id] ?? initialState();
             const hasPhone = !!r.phone;
+            const isSelected = selectedIds.has(r.id);
             return (
               <div
                 key={r.id}
+                data-restaurant-id={r.id}
                 className={`rounded-2xl border transition-colors ${
-                  s.selected
+                  isSelected
                     ? "bg-violet-900/15 border-violet-500/25"
                     : "bg-white/[0.02] border-white/[0.04]"
                 } ${!hasPhone ? "opacity-50" : ""}`}
               >
                 <div className="flex items-start gap-3 p-3">
                   <button
-                    onClick={() => hasPhone && toggleSelect(r.id)}
+                    onClick={() => hasPhone && onToggleSelection(r.id)}
                     disabled={!hasPhone || batchRunning}
                     className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all flex-shrink-0 ${
-                      s.selected
+                      isSelected
                         ? "bg-violet-500 border-violet-500 text-white"
                         : "border-white/20 hover:border-violet-400/60"
                     } ${!hasPhone || batchRunning ? "cursor-not-allowed" : "cursor-pointer"}`}
                   >
-                    {s.selected && (
+                    {isSelected && (
                       <svg
                         className="w-3 h-3"
                         fill="none"
@@ -339,7 +421,7 @@ export default function BatchCallPanel({ restaurants, onClose }: Props) {
                             d="M4 12a8 8 0 018-8v8H4z"
                           />
                         </svg>
-                        Calling...
+                        {s.progress || "Calling..."}
                       </div>
                     )}
 
@@ -347,43 +429,52 @@ export default function BatchCallPanel({ restaurants, onClose }: Props) {
                       <p className="mt-2 text-[11px] text-rose-400">{s.error}</p>
                     )}
 
-                    {s.phase === "done" && s.result && (
-                      <div className="mt-2 rounded-xl bg-white/[0.03] border border-white/[0.05] p-2.5 space-y-1 text-[11px]">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`w-1.5 h-1.5 rounded-full ${
-                              s.result.can_reserve === true
-                                ? "bg-emerald-400"
-                                : s.result.can_reserve === false
-                                ? "bg-rose-400"
-                                : "bg-gray-500"
-                            }`}
-                          />
-                          <span className="text-gray-300 font-medium">
-                            {s.result.can_reserve === true
-                              ? "Reservation available"
-                              : s.result.can_reserve === false
-                              ? "Walk-in only"
-                              : "Status unclear"}
-                          </span>
-                          {s.result.wait_minutes != null && s.result.wait_minutes > 0 && (
-                            <span className="ml-auto text-amber-300 font-semibold">
-                              ~{s.result.wait_minutes} min
-                            </span>
-                          )}
-                          {s.result.wait_minutes === 0 && s.result.can_reserve && (
-                            <span className="ml-auto text-emerald-300 font-semibold">
-                              No wait
-                            </span>
-                          )}
+                    {(s.phase === "done" || (s.phase === "calling" && s.result)) &&
+                      s.result && (
+                        <div className="mt-2 rounded-xl bg-white/[0.03] border border-white/[0.05] p-2.5 space-y-1.5 text-[11px]">
+                          {Object.entries(s.result.answers).map(([key, ans]) => {
+                            const label = QUESTION_LABEL_MAP[key] ?? key;
+                            const icon =
+                              ans.value === true ? "✓" : ans.value === false ? "✗" : "?";
+                            const iconCls =
+                              ans.value === true
+                                ? "text-emerald-400"
+                                : ans.value === false
+                                ? "text-rose-400"
+                                : "text-gray-500";
+                            return (
+                              <div key={key} className="flex items-start gap-2">
+                                <span
+                                  className={`${iconCls} font-bold w-3 text-center mt-0.5 flex-shrink-0`}
+                                >
+                                  {icon}
+                                </span>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-gray-200 font-medium">{label}</span>
+                                    {key === "reservation" &&
+                                      ans.wait_minutes != null &&
+                                      ans.wait_minutes > 0 && (
+                                        <span className="text-amber-300 text-[10px] font-semibold">
+                                          ~{ans.wait_minutes} min wait
+                                        </span>
+                                      )}
+                                  </div>
+                                  {ans.details && (
+                                    <p className="text-gray-500 leading-relaxed">
+                                      {ans.details}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {s.phase === "done" &&
+                            Object.keys(s.result.answers).length === 0 && (
+                              <p className="text-gray-500 italic">No structured answers parsed.</p>
+                            )}
                         </div>
-                        {s.result.notes && (
-                          <p className="text-gray-400 leading-relaxed line-clamp-3">
-                            {s.result.notes}
-                          </p>
-                        )}
-                      </div>
-                    )}
+                      )}
                   </div>
                 </div>
               </div>

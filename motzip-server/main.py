@@ -15,7 +15,7 @@ import sys
 from dotenv import load_dotenv
 load_dotenv()
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, File, UploadFile, Form, Response
+from fastapi import FastAPI, File, UploadFile, Form, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
@@ -880,12 +880,47 @@ def _keyword_parse_gather(speech: str) -> dict:
     return {"can_reserve": can_reserve, "wait_minutes": wait, "notes": speech}
 
 
+# Catalog of structured questions the caller can ask. Each entry produces
+# one segment in the phone script and one answer slot in the result.
+QUESTION_CATALOG: dict[str, dict] = {
+    "reservation": {
+        "label": "Reservation",
+        "prompt": "is a reservation available for a party of {party_size} right now, or what is the current wait time",
+    },
+    "wheelchair": {
+        "label": "Wheelchair access",
+        "prompt": "is the restaurant wheelchair accessible",
+    },
+    "vegetarian": {
+        "label": "Vegetarian options",
+        "prompt": "do you offer vegetarian or vegan menu options",
+    },
+    "outdoor": {
+        "label": "Outdoor seating",
+        "prompt": "is outdoor seating available right now",
+    },
+    "dogs": {
+        "label": "Allows dogs",
+        "prompt": "do you allow dogs",
+    },
+    "parking": {
+        "label": "Parking",
+        "prompt": "what parking options do you have nearby",
+    },
+    "music": {
+        "label": "Live music",
+        "prompt": "do you have live music tonight",
+    },
+}
+
+
 class CallRestaurantRequest(BaseModel):
     restaurant_name: str
     phone: str
     party_size: int = 2
     time_preference: str = "as soon as possible"
-    custom_question: str = ""  # 유저가 직접 입력한 질문 (한/영 모두 가능)
+    questions: list[str] = []      # keys from QUESTION_CATALOG
+    custom_question: str = ""      # freeform extra question (any language)
 
 
 class CallRestaurantResponse(BaseModel):
@@ -893,18 +928,58 @@ class CallRestaurantResponse(BaseModel):
     status: str
 
 
+class QuestionAnswer(BaseModel):
+    value: bool | None = None  # True=yes/available, False=no, None=unaddressed
+    details: str = ""
+    wait_minutes: int | None = None  # only meaningful for "reservation"
+
+
 class CallResultResponse(BaseModel):
     call_sid: str
-    status: str  # "initiated" | "in-progress" | "completed" | "failed"
+    status: str  # "initiated" | "in-progress" | "parsing" | "completed" | "failed"
+    answers: dict[str, QuestionAnswer] = {}
+    raw_speech: str = ""
+    # Legacy fields (RestaurantPanel single-call view) — derived from
+    # answers["reservation"] if present.
     can_reserve: bool | None = None
     wait_minutes: int | None = None
     notes: str = ""
-    raw_speech: str = ""
+
+
+async def _translate_to_english(text: str) -> str:
+    """Translate a non-English question to a polite English phone question."""
+    try:
+        async with httpx.AsyncClient() as client_http:
+            r = await client_http.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model": MODEL,
+                    "prompt": text,
+                    "system": (
+                        "Translate the user's question into a polite, natural English "
+                        "question that one would ask a restaurant on the phone. "
+                        "Output ONLY the translated question — one sentence, no quotes, "
+                        "no preamble, no explanation."
+                    ),
+                    "stream": False,
+                    "options": {"temperature": 0.2, "num_predict": 100},
+                },
+                timeout=15,
+            )
+            r.raise_for_status()
+            return r.json()["response"].strip().strip('"“”‘’\'`')
+    except Exception as e:
+        print(f"[twilio] translation error: {e}, using original text")
+        return text
 
 
 @app.post("/api/call-restaurant", response_model=CallRestaurantResponse)
 async def call_restaurant(body: CallRestaurantRequest):
-    """Initiate an outbound Twilio call to a restaurant to ask about availability."""
+    """Initiate an outbound Twilio call. The caller picks which structured
+    questions to ask via `questions` (keys from QUESTION_CATALOG) and may add a
+    freeform `custom_question`. Both kinds end up in the phone script and are
+    parsed back into per-key answers when the restaurant responds.
+    """
     if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN or not TWILIO_PHONE_NUMBER:
         from fastapi import HTTPException
         raise HTTPException(status_code=503, detail="Twilio credentials not configured")
@@ -913,58 +988,39 @@ async def call_restaurant(body: CallRestaurantRequest):
     import urllib.parse
     client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-    # Build a single phone script that combines the standard reservation/wait
-    # question with any extra question the user typed. We always ask about
-    # availability (that's what drives can_reserve / wait_minutes); the custom
-    # question is appended so the restaurant answers both in one breath.
-    # Build the phone script deterministically. Use the LLM ONLY to translate the
-    # caller's extra question into a polite English question — gemma was unreliable
-    # at composing the whole script (wrong perspective, dropping the extra question).
-    greeting_script = ""
+    # Resolve question keys to (key, prompt_text) pairs in catalog order.
+    ordered: list[tuple[str, str]] = []
+    asked_keys: list[str] = []
+    for k in body.questions:
+        spec = QUESTION_CATALOG.get(k)
+        if not spec:
+            continue
+        ordered.append((k, spec["prompt"].format(party_size=body.party_size)))
+        asked_keys.append(k)
+
+    # Translate custom question if non-ASCII (Korean etc.); pass through if English.
+    custom_en = ""
     raw_extra = body.custom_question.strip()
     if raw_extra:
-        extra_english = raw_extra
-        # Only invoke the LLM for non-ASCII (e.g. Korean) input — English passes through.
-        needs_translate = any(ord(c) > 127 for c in raw_extra)
-        if needs_translate:
-            try:
-                async with httpx.AsyncClient() as client_http:
-                    r = await client_http.post(
-                        f"{OLLAMA_URL}/api/generate",
-                        json={
-                            "model": MODEL,
-                            "prompt": raw_extra,
-                            "system": (
-                                "Translate the user's question into a polite, natural English "
-                                "question that one would ask a restaurant on the phone. "
-                                "Output ONLY the translated question — one sentence, no quotes, "
-                                "no preamble, no explanation."
-                            ),
-                            "stream": False,
-                            "options": {"temperature": 0.2, "num_predict": 100},
-                        },
-                        timeout=15,
-                    )
-                    r.raise_for_status()
-                    extra_english = r.json()["response"].strip().strip('"“”‘’\'`')
-                    print(f"[twilio] translated extra question: {extra_english}")
-            except Exception as e:
-                print(f"[twilio] translation error: {e}, using original text")
+        if any(ord(c) > 127 for c in raw_extra):
+            custom_en = await _translate_to_english(raw_extra)
+            print(f"[twilio] translated custom: {custom_en}")
+        else:
+            custom_en = raw_extra
+        # Strip trailing punctuation so our script template can re-add it
+        custom_en = custom_en.rstrip(".?!").strip()
+        ordered.append(("custom", custom_en))
+        asked_keys.append("custom")
 
-        greeting_script = (
-            f"Hi, I'm calling on behalf of a customer. Could you let me know if a "
-            f"reservation is available for a party of {body.party_size}, {body.time_preference}, "
-            f"or what the current wait time is? Also, {extra_english}"
-        )
-        print(f"[twilio] combined script: {greeting_script}")
+    # Default to reservation if nothing was asked — keeps single-call panels working.
+    if not ordered:
+        ordered.append(("reservation", QUESTION_CATALOG["reservation"]["prompt"].format(party_size=body.party_size)))
+        asked_keys.append("reservation")
 
-    twiml_url = (
-        f"{NGROK_URL}/api/twilio/voice"
-        f"?restaurant_name={urllib.parse.quote(body.restaurant_name)}"
-        f"&party_size={body.party_size}"
-        f"&time_preference={urllib.parse.quote(body.time_preference)}"
-        + (f"&greeting_script={urllib.parse.quote(greeting_script)}" if greeting_script else "")
-    )
+    print(f"[twilio] questions for call: {asked_keys}")
+    # Per-step iteration: voice endpoint reads CallSid + step from the request,
+    # looks up the question list in _call_state. No script in the URL anymore.
+    twiml_url = f"{NGROK_URL}/api/twilio/voice?step=0"
 
     to_number = TWILIO_TEST_TO if TWILIO_TEST_TO else body.phone
     call = client.calls.create(
@@ -979,107 +1035,206 @@ async def call_restaurant(body: CallRestaurantRequest):
     _call_state[call.sid] = {
         "restaurant_name": body.restaurant_name,
         "status": "initiated",
-        "can_reserve": None,
-        "wait_minutes": None,
-        "notes": "",
+        "asked_keys": asked_keys,
+        "asked_questions": dict(ordered),  # key → question text (for LLM context)
+        "custom_label": custom_en,
+        "answers": {},
         "raw_speech": "",
     }
 
     return CallRestaurantResponse(call_sid=call.sid, status="initiated")
 
 
+def _xml_escape(s: str) -> str:
+    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+              .replace('"', "&quot;").replace("'", "&apos;"))
+
+
+def _step_say(step: int, question_text: str) -> str:
+    """Speech bubble for a single step. First step adds the greeting; later steps acknowledge."""
+    if step == 0:
+        return (
+            f"Hi, I'm calling on behalf of a customer. I have a few quick questions. "
+            f"First, {question_text}?"
+        )
+    return f"Got it, thank you. Next, {question_text}?"
+
+
 @app.post("/api/twilio/voice")
-async def twilio_voice(
-    restaurant_name: str = "the restaurant",
-    party_size: int = 2,
-    time_preference: str = "as soon as possible",
-    greeting_script: str = "",
-):
-    """TwiML handler — called by Twilio when the restaurant picks up."""
+async def twilio_voice(step: int = Query(0), CallSid: str = Form("")):
+    """TwiML handler — Twilio fetches this when the restaurant picks up.
+    With per-question iteration, this is only used for step=0 (the very first
+    question). Subsequent questions are chained from /api/twilio/gather.
+    """
     from fastapi.responses import PlainTextResponse
 
-    if greeting_script.strip():
-        greeting = greeting_script.strip()
-    else:
-        greeting = (
-            f"Hello! I'm calling on behalf of a customer who would like to make a reservation "
-            f"or ask about the current wait time for a party of {party_size}, {time_preference}. "
-            f"Could you please let me know if a reservation is available or what the current wait time is?"
-        )
+    info = _call_state.get(CallSid) or {}
+    asked_keys: list[str] = info.get("asked_keys") or ["reservation"]
+    asked_questions: dict[str, str] = info.get("asked_questions") or {
+        "reservation": QUESTION_CATALOG["reservation"]["prompt"].format(party_size=2)
+    }
+
+    if step >= len(asked_keys):
+        twiml = """<?xml version="1.0" encoding="UTF-8"?>
+<Response><Say voice="Polly.Joanna-Neural">Sorry, no questions configured. Goodbye.</Say><Hangup/></Response>"""
+        return PlainTextResponse(content=twiml, media_type="application/xml")
+
+    info["status"] = f"asking 1/{len(asked_keys)}"
+    _call_state[CallSid] = info
+
+    key = asked_keys[step]
+    question_text = asked_questions[key]
+    say_text = _xml_escape(_step_say(step, question_text))
 
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Gather input="speech" action="{NGROK_URL}/api/twilio/gather" method="POST"
-          speechTimeout="auto" timeout="10" language="en-US ko-KR">
-    <Say voice="Polly.Joanna-Neural">{greeting}</Say>
+  <Gather input="speech" action="{NGROK_URL}/api/twilio/gather?step={step}" method="POST"
+          speechTimeout="auto" timeout="10" language="en-US">
+    <Say voice="Polly.Joanna-Neural">{say_text}</Say>
   </Gather>
-  <Say voice="Polly.Joanna-Neural">I did not receive a response. Thank you for your time. Goodbye.</Say>
+  <Say voice="Polly.Joanna-Neural">I did not receive a response. Thank you. Goodbye.</Say>
 </Response>"""
 
     return PlainTextResponse(content=twiml, media_type="application/xml")
 
 
+async def _parse_single_answer(key: str, question_text: str, speech: str) -> dict:
+    """LLM-parse one restaurant utterance against one specific question."""
+    if not speech:
+        return {"value": None, "details": ""}
+
+    extra_field = (
+        ", \"wait_minutes\": <integer if a wait time was mentioned, otherwise omit>"
+        if key == "reservation" else ""
+    )
+    system_prompt = (
+        "You are parsing a restaurant staff member's spoken reply to ONE question.\n"
+        f"Question that was asked: \"{question_text}\"\n\n"
+        "Respond ONLY with a JSON object — no markdown, no preamble:\n"
+        "{ \"value\": true|false|null, \"details\": \"short factual phrase or empty string\""
+        + extra_field + " }\n\n"
+        "Rules:\n"
+        "- value: true = yes/affirmative/available, false = no/negative/unavailable, null = ambiguous or unrelated.\n"
+        "- details: ONE short factual phrase the staff said (e.g. \"15 min wait\", \"only one veg dish\"). Empty string if nothing useful.\n"
+        "- No invented facts. Use only what the staff actually said."
+    )
+
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model": MODEL,
+                    "prompt": speech,
+                    "system": system_prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.1, "num_predict": 150},
+                },
+                timeout=20,
+            )
+            r.raise_for_status()
+        raw = r.json()["response"].strip()
+        if "```" in raw:
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        parsed = json.loads(raw)
+        return {
+            "value": parsed.get("value"),
+            "details": parsed.get("details") or "",
+            **({"wait_minutes": int(parsed["wait_minutes"])}
+               if key == "reservation" and isinstance(parsed.get("wait_minutes"), (int, float))
+               else {}),
+        }
+    except Exception as e:
+        print(f"[twilio] single-answer parse failed for {key}: {e}, using keyword fallback")
+        kw = _keyword_parse_gather(speech)
+        out: dict = {"value": kw["can_reserve"], "details": speech[:120]}
+        if key == "reservation":
+            out["wait_minutes"] = kw["wait_minutes"]
+        return out
+
+
 @app.post("/api/twilio/gather")
 async def twilio_gather(
+    step: int = Query(0),
     CallSid: str = Form(""),
     SpeechResult: str = Form(""),
 ):
-    """Twilio posts here after gathering the restaurant's speech response."""
+    """Per-step gather: parse this one answer, then chain to the next question
+    (or hang up if it was the last). Each question is parsed independently so
+    the LLM has tight context.
+    """
     from fastapi.responses import PlainTextResponse
 
     raw_speech = SpeechResult.strip()
-    print(f"[twilio] gather received — CallSid={CallSid}, SpeechResult={repr(raw_speech)}")
     call_info = _call_state.get(CallSid, {})
-    call_info["raw_speech"] = raw_speech
-    # Mark as parsing so the frontend keeps polling instead of grabbing a half-built result.
-    # status flips to "completed" only after parsed fields are written below.
-    call_info["status"] = "parsing"
+    asked_keys: list[str] = call_info.get("asked_keys") or ["reservation"]
+    asked_questions: dict[str, str] = call_info.get("asked_questions") or {
+        "reservation": QUESTION_CATALOG["reservation"]["prompt"].format(party_size=2)
+    }
 
-    # Parse the restaurant's response with LLM, fall back to keyword heuristics
-    # if Ollama is unreachable so the demo still produces a useful verdict.
-    parsed = {"can_reserve": None, "wait_minutes": 0, "notes": raw_speech}
-    if raw_speech:
-        try:
-            async with httpx.AsyncClient() as client:
-                r = await client.post(
-                    f"{OLLAMA_URL}/api/generate",
-                    json={
-                        "model": MODEL,
-                        "prompt": raw_speech,
-                        "system": TWILIO_GATHER_PROMPT,
-                        "stream": False,
-                        "options": {"temperature": 0.1, "num_predict": 200},
-                    },
-                    timeout=20,
-                )
-                r.raise_for_status()
-            raw = r.json()["response"].strip()
-            if "```" in raw:
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-            parsed = json.loads(raw)
-            print(f"[twilio] LLM parsed: {parsed}")
-        except Exception as e:
-            print(f"[twilio] LLM parse failed ({e}), using keyword fallback")
-            parsed = _keyword_parse_gather(raw_speech)
-            print(f"[twilio] keyword parsed: {parsed}")
+    if step >= len(asked_keys):
+        # Defensive — shouldn't happen.
+        twiml = """<?xml version="1.0" encoding="UTF-8"?>
+<Response><Say voice="Polly.Joanna-Neural">Goodbye.</Say><Hangup/></Response>"""
+        return PlainTextResponse(content=twiml, media_type="application/xml")
 
-    call_info["can_reserve"] = parsed.get("can_reserve")
-    call_info["wait_minutes"] = int(parsed.get("wait_minutes") or 0)
-    call_info["notes"] = parsed.get("notes", raw_speech)
-    # Flip to completed only AFTER the parsed fields are populated, so polling
-    # never returns a "completed" status with empty parsed data.
+    cur_key = asked_keys[step]
+    cur_question = asked_questions[cur_key]
+    print(f"[twilio] gather step={step+1}/{len(asked_keys)} key={cur_key} speech={raw_speech!r}")
+
+    # Parse this single answer for this single question
+    answer = await _parse_single_answer(cur_key, cur_question, raw_speech)
+    print(f"[twilio] parsed [{cur_key}]: {answer}")
+
+    answers = call_info.setdefault("answers", {})
+    answers[cur_key] = answer
+
+    # Append to per-step raw log + legacy concatenated raw_speech
+    raw_log: list = call_info.setdefault("raw_speech_log", [])
+    raw_log.append({"key": cur_key, "speech": raw_speech})
+    call_info["raw_speech"] = " | ".join(f"[{r['key']}] {r['speech']}" for r in raw_log)
+
+    next_step = step + 1
+    if next_step < len(asked_keys):
+        # More questions — chain another <Gather>
+        call_info["status"] = f"asking {next_step + 1}/{len(asked_keys)}"
+        _call_state[CallSid] = call_info
+
+        next_key = asked_keys[next_step]
+        next_question = asked_questions[next_key]
+        say_text = _xml_escape(_step_say(next_step, next_question))
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Gather input="speech" action="{NGROK_URL}/api/twilio/gather?step={next_step}" method="POST"
+          speechTimeout="auto" timeout="10" language="en-US">
+    <Say voice="Polly.Joanna-Neural">{say_text}</Say>
+  </Gather>
+  <Say voice="Polly.Joanna-Neural">I did not receive a response. Goodbye.</Say>
+</Response>"""
+        return PlainTextResponse(content=twiml, media_type="application/xml")
+
+    # Last question answered — populate legacy fields, finish.
+    res_ans = answers.get("reservation")
+    if isinstance(res_ans, dict):
+        call_info["can_reserve"] = res_ans.get("value")
+        call_info["wait_minutes"] = int(res_ans.get("wait_minutes") or 0)
+        call_info["notes"] = res_ans.get("details") or call_info.get("raw_speech", "")
+    else:
+        call_info["can_reserve"] = None
+        call_info["wait_minutes"] = 0
+        call_info["notes"] = call_info.get("raw_speech", "")
+
     call_info["status"] = "completed"
     _call_state[CallSid] = call_info
 
-    farewell = "Thank you so much for the information! Have a great day. Goodbye."
+    farewell = "Thank you so much for all the information! Have a great day. Goodbye."
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna-Neural">{farewell}</Say>
   <Hangup/>
 </Response>"""
-
     return PlainTextResponse(content=twiml, media_type="application/xml")
 
 
@@ -1100,13 +1255,24 @@ async def call_result(call_sid: str):
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Call not found")
 
+    raw_answers = info.get("answers") or {}
+    answers = {
+        k: QuestionAnswer(
+            value=v.get("value") if isinstance(v, dict) else None,
+            details=(v.get("details") or "") if isinstance(v, dict) else "",
+            wait_minutes=v.get("wait_minutes") if isinstance(v, dict) else None,
+        )
+        for k, v in raw_answers.items()
+    }
+
     return CallResultResponse(
         call_sid=call_sid,
         status=info.get("status", "initiated"),
+        answers=answers,
+        raw_speech=info.get("raw_speech", ""),
         can_reserve=info.get("can_reserve"),
         wait_minutes=info.get("wait_minutes"),
         notes=info.get("notes", ""),
-        raw_speech=info.get("raw_speech", ""),
     )
 
 
