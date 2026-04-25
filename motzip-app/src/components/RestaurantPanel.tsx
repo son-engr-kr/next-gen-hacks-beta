@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Restaurant, categoryEmoji } from "@/types/restaurant";
+import RestaurantDetails from "./RestaurantDetails";
 
 const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:8000";
 
@@ -144,19 +145,6 @@ export default function RestaurantPanel({ restaurant, onClose }: Props) {
             </div>
           )}
 
-          <p className="text-[13px] text-gray-400 leading-relaxed">{restaurant.description}</p>
-
-          {restaurant.topReview && (
-            <div className="relative rounded-2xl bg-white/[0.03] border border-white/[0.05] p-4">
-              <div className="absolute -top-1.5 left-4 px-2 bg-gray-950/80 text-[9px] text-gray-500 uppercase tracking-widest font-bold">
-                Top Review
-              </div>
-              <p className="text-gray-300 text-[13px] italic leading-relaxed mt-1">
-                &ldquo;{restaurant.topReview}&rdquo;
-              </p>
-            </div>
-          )}
-
           {/* Stats */}
           <div className="grid grid-cols-2 gap-2 pt-1">
             <StatCard
@@ -170,6 +158,11 @@ export default function RestaurantPanel({ restaurant, onClose }: Props) {
               gradient="from-sky-300 to-blue-400"
             />
           </div>
+
+          {/* Open status, price, phone, feature badges, signature dishes,
+              description, top review — same details the BatchCallPanel cards show. */}
+          <RestaurantDetails restaurant={restaurant} />
+
 
           {/* Twilio Call section */}
           {restaurant.phone && (
