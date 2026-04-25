@@ -9,7 +9,7 @@ CATEGORIES = [
 
 # Maps Google Places type strings → our internal category.
 GOOGLE_TYPE_MAP: dict[str, str] = {
-    "burger_restaurant": "burger",
+    "hamburger_restaurant": "burger",
     "pizza_restaurant": "pizza",
     "sushi_restaurant": "sushi",
     "ramen_restaurant": "ramen",

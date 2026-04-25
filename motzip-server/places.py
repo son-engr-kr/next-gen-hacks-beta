@@ -62,14 +62,23 @@ _FIELD_MASK = ",".join([
     "places.nationalPhoneNumber",
 ])
 
-# Three groups so each request returns a distinct cuisine cluster — gets us
-# ~50-60 unique buildings instead of the 20-per-request API limit.
+# Each `searchNearby` is hard-capped at 20 results with no pagination, so we
+# fan out across narrow type groups and dedupe. Note: if ANY type in a group
+# is invalid (e.g. `burger_restaurant` — actual name is `hamburger_restaurant`)
+# Google silently returns 0 for the WHOLE group. Verify each new type alone.
 _TYPE_GROUPS = [
     ["restaurant", "cafe", "bakery"],
-    ["pizza_restaurant", "sushi_restaurant", "ramen_restaurant",
-     "italian_restaurant", "chinese_restaurant", "thai_restaurant"],
-    ["seafood_restaurant", "mexican_restaurant", "burger_restaurant",
+    ["pizza_restaurant", "sushi_restaurant", "ramen_restaurant"],
+    ["italian_restaurant", "chinese_restaurant", "thai_restaurant",
+     "japanese_restaurant", "korean_restaurant"],
+    ["seafood_restaurant", "mexican_restaurant", "hamburger_restaurant",
      "steak_house", "coffee_shop"],
+    ["american_restaurant", "fast_food_restaurant", "sandwich_shop",
+     "ice_cream_shop", "dessert_shop"],
+    ["french_restaurant", "vegetarian_restaurant", "vietnamese_restaurant",
+     "indian_restaurant", "mediterranean_restaurant"],
+    ["bar", "bar_and_grill", "brunch_restaurant", "fine_dining_restaurant",
+     "breakfast_restaurant"],
 ]
 
 
