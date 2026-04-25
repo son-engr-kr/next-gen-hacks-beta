@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Restaurant, categoryEmoji } from "@/types/restaurant";
-import { CallResult, QuestionAnswer, fetchSignatureDishes } from "@/lib/callApi";
+import { CallResult, QuestionAnswer } from "@/lib/callApi";
 import { QUESTION_LABEL_MAP } from "@/lib/questionCatalog";
+import RestaurantDetails from "../RestaurantDetails";
 
 export type CallPhase = "idle" | "calling" | "done" | "error";
 
@@ -33,24 +34,6 @@ export default function RestaurantCallCard({
   onToggleSelection,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
-  // Per-card cache of signature dishes. null = not yet fetched, [] = fetched (no
-  // dishes), [...] = fetched results. Refreshing is unnecessary since the
-  // server caches results too.
-  const [dishes, setDishes] = useState<string[] | null>(null);
-  const [dishesLoading, setDishesLoading] = useState(false);
-  const fetchedRef = useRef(false);
-
-  // Lazy-fetch signature dishes the first time the card is expanded.
-  useEffect(() => {
-    if (!expanded || fetchedRef.current) return;
-    fetchedRef.current = true;
-    setDishesLoading(true);
-    fetchSignatureDishes(r.id)
-      .then((d) => setDishes(d))
-      .catch(() => setDishes([]))
-      .finally(() => setDishesLoading(false));
-  }, [expanded, r.id]);
-
   const hasPhone = !!r.phone;
   const showAnswers = (s.phase === "done" || (s.phase === "calling" && s.result)) && s.result;
 
@@ -115,7 +98,9 @@ export default function RestaurantCallCard({
       </div>
 
       {expanded && (
-        <DetailsPanel restaurant={r} dishes={dishes} dishesLoading={dishesLoading} />
+        <div className="px-3 pb-3 pt-2">
+          <RestaurantDetails restaurant={r} withTopDivider />
+        </div>
       )}
     </div>
   );
@@ -149,131 +134,6 @@ function priceLevelLabel(level: Restaurant["priceLevel"]): string {
       VERY_EXPENSIVE: "$$$$",
       FREE: "Free",
     }[bucket] ?? ""
-  );
-}
-
-function DetailsPanel({
-  restaurant: r,
-  dishes,
-  dishesLoading,
-}: {
-  restaurant: Restaurant;
-  dishes: string[] | null;
-  dishesLoading: boolean;
-}) {
-  const features: { icon: string; label: string }[] = [];
-  if (r.isWheelchairAccessible) features.push({ icon: "♿", label: "Wheelchair" });
-  if (r.parkingType) features.push({ icon: "🅿️", label: `${r.parkingType} parking` });
-  if (r.hasLiveMusic) features.push({ icon: "🎵", label: "Live music" });
-  if (r.allowsDogs) features.push({ icon: "🐕", label: "Dogs OK" });
-  if (r.servesCocktails) features.push({ icon: "🍸", label: "Cocktails" });
-
-  return (
-    <div className="px-3 pb-3 pt-2 border-t border-white/[0.04] space-y-2.5 text-[11px]">
-      {/* Status row */}
-      <div className="flex items-center gap-2 flex-wrap">
-        {r.isOpenNow != null && (
-          <span
-            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-semibold ${
-              r.isOpenNow
-                ? "bg-emerald-900/40 text-emerald-300 border border-emerald-500/20"
-                : "bg-rose-900/40 text-rose-300 border border-rose-500/20"
-            }`}
-          >
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                r.isOpenNow ? "bg-emerald-400" : "bg-rose-400"
-              }`}
-            />
-            {r.isOpenNow ? "Open now" : "Closed"}
-          </span>
-        )}
-        {r.phone && <span className="text-gray-500 font-mono">{r.phone}</span>}
-      </div>
-
-      {/* Feature badges */}
-      {features.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {features.map((f) => (
-            <span
-              key={f.label}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/[0.04] border border-white/[0.06] text-gray-300"
-            >
-              <span>{f.icon}</span>
-              <span>{f.label}</span>
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* Signature dishes (LLM-extracted from reviews on first expand) */}
-      <SignatureDishes dishes={dishes} loading={dishesLoading} />
-
-      {/* Description */}
-      {r.description && (
-        <p className="text-gray-400 leading-relaxed">{r.description}</p>
-      )}
-
-      {/* Top review */}
-      {r.topReview && (
-        <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-2.5">
-          <p className="text-[9px] uppercase tracking-widest text-gray-600 font-bold mb-1">
-            Top review
-          </p>
-          <p className="text-gray-400 italic leading-relaxed line-clamp-4">
-            “{r.topReview}”
-          </p>
-        </div>
-      )}
-
-      {/* Empty-state — when the place has no enriched data */}
-      {!r.description &&
-        !r.topReview &&
-        features.length === 0 &&
-        r.isOpenNow == null &&
-        (dishes?.length ?? 0) === 0 &&
-        !dishesLoading && (
-          <p className="text-gray-600 italic">No additional details available.</p>
-        )}
-    </div>
-  );
-}
-
-function SignatureDishes({
-  dishes,
-  loading,
-}: {
-  dishes: string[] | null;
-  loading: boolean;
-}) {
-  if (loading) {
-    return (
-      <div className="flex items-center gap-2 text-gray-500">
-        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-        </svg>
-        <span>Reading reviews for signature dishes…</span>
-      </div>
-    );
-  }
-  if (!dishes || dishes.length === 0) return null;
-  return (
-    <div>
-      <p className="text-[9px] uppercase tracking-widest text-gray-600 font-bold mb-1">
-        🍽 Signature dishes
-      </p>
-      <div className="flex flex-wrap gap-1.5">
-        {dishes.map((d) => (
-          <span
-            key={d}
-            className="inline-flex items-center px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-400/30 text-amber-200 font-medium"
-          >
-            {d}
-          </span>
-        ))}
-      </div>
-    </div>
   );
 }
 
