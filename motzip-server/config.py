@@ -5,6 +5,17 @@ when the app starts (see main.py)."""
 import os
 
 # ── LLM ──────────────────────────────────────────────────────────────────────
+# Primary: Gemini via Vertex AI. Fallback: local Ollama (works offline, used
+# automatically if Vertex calls fail — important during demos where wifi
+# can drop).
+LLM_PROVIDER = os.getenv("MOTZIP_LLM_PROVIDER", "gemini")  # "gemini" | "ollama"
+
+# Gemini / Vertex AI
+GCP_PROJECT = os.getenv("GCP_PROJECT", "theta-bliss-486220-s1")
+GCP_LOCATION = os.getenv("GCP_LOCATION", "us-central1")
+GEMINI_MODEL = os.getenv("MOTZIP_GEMINI_MODEL", "gemini-2.0-flash")
+
+# Ollama (fallback)
 OLLAMA_URL = "http://localhost:11434"
 MODEL = os.getenv("MOTZIP_MODEL", "gemma3:4b")
 OLLAMA_POLL_INTERVAL_SECONDS = 2

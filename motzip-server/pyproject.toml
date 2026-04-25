@@ -10,4 +10,5 @@ dependencies = [
     "uvicorn==0.34.2",
     "twilio>=9.0.0",
     "python-dotenv>=1.0.0",
+    "google-genai>=1.73.1",
 ]
