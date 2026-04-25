@@ -5,7 +5,7 @@ import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { restaurants as staticRestaurants } from "@/data/restaurants";
 import { Restaurant } from "@/types/restaurant";
-import { createBuildingCustomLayer } from "./BuildingLayer";
+import { createBuildingCustomLayer, getBuildingTier } from "./BuildingLayer";
 import RestaurantPanel from "./RestaurantPanel";
 import BatchCallPanel from "./BatchCallPanel";
 import Fireworks from "./Fireworks";
@@ -32,18 +32,24 @@ const ICON_FILTER_DEFS: { key: IconFilterKey; label: string; match: (r: Restaura
 function buildGeoJSON(restaurants: Restaurant[]) {
   return {
     type: "FeatureCollection" as const,
-    features: restaurants.map((r) => ({
-      type: "Feature" as const,
-      properties: {
-        id: r.id,
-        name: r.name,
-        height: Math.max(30, r.reviewCount * 0.6),
-      },
-      geometry: {
-        type: "Polygon" as const,
-        coordinates: [buildSquare(r.lng, r.lat, 0.00022)],
-      },
-    })),
+    features: restaurants.map((r) => {
+      const tier = getBuildingTier(r.reviewCount, r.rating);
+      // Hit area must cover the visible mesh:
+      //  - landmark: themed GLB up to ~50*s wide and tall
+      //  - non-landmark: small floating food icon hovering at ~30+ scene units
+      // Square size in degrees; 0.00045 ≈ 50m, 0.00030 ≈ 33m at Boston lat.
+      // Height in meters — generous so floating icons + tall landmarks both register.
+      const size   = tier === "landmark" ? 0.00045 : 0.00030;
+      const height = tier === "landmark" ? 280 : 220;
+      return {
+        type: "Feature" as const,
+        properties: { id: r.id, name: r.name, height },
+        geometry: {
+          type: "Polygon" as const,
+          coordinates: [buildSquare(r.lng, r.lat, size)],
+        },
+      };
+    }),
   };
 }
 
@@ -64,6 +70,8 @@ export default function Map3D() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const setFilterRef = useRef<((ids: Set<string> | null) => void) | null>(null);
+  const setHoveredRef = useRef<((id: string | null) => void) | null>(null);
+  const setSelectedHlRef = useRef<((id: string | null) => void) | null>(null);
   const [selected, setSelected] = useState<Restaurant | null>(null);
   const [mapInstance, setMapInstance] = useState<maplibregl.Map | null>(null);
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
@@ -161,6 +169,11 @@ export default function Map3D() {
     setFilterRef.current(ids);
   }, [voiceResults, iconFilters, restaurants]);
 
+  // Sync selected restaurant → 3D highlight glow
+  useEffect(() => {
+    setSelectedHlRef.current?.(selected?.id ?? null);
+  }, [selected]);
+
   const toggleIconFilter = (k: IconFilterKey) => {
     setIconFilters((prev) => {
       const next = new Set(prev);
@@ -247,8 +260,10 @@ export default function Map3D() {
       }
 
       // Three.js custom layer for 3D buildings with textures
-      const { layer: buildingLayer, setFilter } = createBuildingCustomLayer(map, restaurants);
+      const { layer: buildingLayer, setFilter, setHovered, setSelected: setSelectedHl } = createBuildingCustomLayer(map, restaurants);
       setFilterRef.current = setFilter;
+      setHoveredRef.current = setHovered;
+      setSelectedHlRef.current = setSelectedHl;
       map.addLayer(buildingLayer);
 
       // Invisible fill-extrusion for click hit-testing
@@ -290,11 +305,14 @@ export default function Map3D() {
         map.flyTo({ center: [r.lng, r.lat], zoom: 16, pitch: 55, duration: 800 });
       });
 
-      map.on("mouseenter", "restaurant-hit", () => {
+      map.on("mousemove", "restaurant-hit", (e) => {
         map.getCanvas().style.cursor = "pointer";
+        const id = e.features?.[0]?.properties?.id as string | undefined;
+        setHoveredRef.current?.(id ?? null);
       });
       map.on("mouseleave", "restaurant-hit", () => {
         map.getCanvas().style.cursor = "";
+        setHoveredRef.current?.(null);
       });
 
     });

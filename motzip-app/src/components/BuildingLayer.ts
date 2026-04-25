@@ -74,7 +74,7 @@ function ratingToColor(rating: number): THREE.Color {
 const REF_LNG = -71.058;
 const REF_LAT  = 42.355;
 
-function getBuildingTier(reviewCount: number, rating: number): "landmark" | "major" | "mid" | "regular" {
+export function getBuildingTier(reviewCount: number, rating: number): "landmark" | "major" | "mid" | "regular" {
   const score = reviewCount * rating;
   if (score >= 2000 && rating >= 4.5) return "landmark";
   if (score >= 1500 && rating >= 4.2) return "major";
@@ -333,6 +333,8 @@ function createTrendingBeacon(topZ: number, s: number): THREE.Group {
 export interface BuildingLayerHandle {
   layer: maplibregl.CustomLayerInterface;
   setFilter: (ids: Set<string> | null) => void;
+  setHovered: (id: string | null) => void;
+  setSelected: (id: string | null) => void;
 }
 
 export function createBuildingCustomLayer(
@@ -358,6 +360,16 @@ export function createBuildingCustomLayer(
   let spotlightBeams: THREE.Mesh[] = [];
 
   const buildingTopZMap = new Map<string, number>();
+
+  // ── Highlight state (hover/selected) ───────────────────────────────────────
+  let hoveredId: string | null = null;
+  let selectedId: string | null = null;
+  const hlMatCache = new Map<string, {
+    mat: THREE.MeshStandardMaterial;
+    origColor: THREE.Color;
+    origIntensity: number;
+  }[]>();
+  let prevHighlighted = new Set<string>();
 
   // ── Feature markers ────────────────────────────────────────────────────────
 
@@ -421,6 +433,9 @@ export function createBuildingCustomLayer(
     buildingGroups.forEach((g) => scene.remove(g));
     buildingGroups = [];
     buildingTopZMap.clear();
+    // Highlight cache references the now-removed materials
+    hlMatCache.clear();
+    prevHighlighted = new Set();
 
     for (const r of restaurants) {
       const g = createBuildingGroup(r, refMerc, s, models);
@@ -1043,6 +1058,9 @@ export function createBuildingCustomLayer(
         });
       });
 
+      // Hover/selected glow pulse on cloned materials
+      applyHighlights(t);
+
       const m = new THREE.Matrix4().fromArray(args.defaultProjectionData.mainMatrix);
       const l = new THREE.Matrix4().makeTranslation(refMerc.x, refMerc.y, refMerc.z);
       camera.projectionMatrix = m.multiply(l);
@@ -1053,5 +1071,88 @@ export function createBuildingCustomLayer(
     },
   };
 
-  return { layer, setFilter };
+  // ── Hover/select highlight ─────────────────────────────────────────────────
+  // Materials in cloned GLB groups are shared by reference, so we clone-on-demand
+  // the first time a restaurant is highlighted, then drive the cloned material's
+  // emissiveIntensity from the render loop (sin pulse).
+
+  interface HlEntry {
+    mat: THREE.MeshStandardMaterial;
+    origColor: THREE.Color;
+    origIntensity: number;
+  }
+
+  const HIGHLIGHT_COLOR = new THREE.Color(0xffd060); // warm gold edge glow
+
+  function collectHighlightMats(idx: number): HlEntry[] {
+    const out: HlEntry[] = [];
+    const targets: THREE.Object3D[] = [];
+    if (buildingGroups[idx]) targets.push(buildingGroups[idx]);
+    const food = foodIconGroups.find((e) => e.restaurantIdx === idx);
+    if (food) targets.push(food.outer);
+
+    for (const root of targets) {
+      root.traverse((child) => {
+        if (!(child as THREE.Mesh).isMesh) return;
+        const mesh = child as THREE.Mesh;
+        const swap = (m: THREE.Material): THREE.Material => {
+          const std = m as THREE.MeshStandardMaterial;
+          if (std.emissive === undefined) return m;
+          const cloned = std.clone();
+          out.push({
+            mat: cloned,
+            origColor: cloned.emissive.clone(),
+            origIntensity: cloned.emissiveIntensity ?? 0,
+          });
+          return cloned;
+        };
+        if (Array.isArray(mesh.material)) {
+          mesh.material = mesh.material.map(swap);
+        } else if (mesh.material) {
+          mesh.material = swap(mesh.material);
+        }
+      });
+    }
+    return out;
+  }
+
+  function applyHighlights(t: number) {
+    const newSet = new Set<string>();
+    if (hoveredId) newSet.add(hoveredId);
+    if (selectedId) newSet.add(selectedId);
+
+    // Restore materials that just left the highlighted set
+    for (const id of prevHighlighted) {
+      if (newSet.has(id)) continue;
+      const mats = hlMatCache.get(id);
+      if (!mats) continue;
+      for (const e of mats) {
+        e.mat.emissive.copy(e.origColor);
+        e.mat.emissiveIntensity = e.origIntensity;
+      }
+    }
+
+    // Pulse 0..1; at the dim phase emissive is near 0 so the texture stays visible.
+    const pulse = 0.5 + 0.5 * Math.sin(t * 4);
+    for (const id of newSet) {
+      let mats = hlMatCache.get(id);
+      if (!mats) {
+        const idx = restaurants.findIndex((r) => r.id === id);
+        if (idx < 0) continue;
+        mats = collectHighlightMats(idx);
+        hlMatCache.set(id, mats);
+      }
+      for (const e of mats) {
+        e.mat.emissive.copy(HIGHLIGHT_COLOR);
+        e.mat.emissiveIntensity = pulse * 0.3;
+      }
+    }
+
+    prevHighlighted = newSet;
+  }
+
+  function setHovered(id: string | null) { hoveredId = id; }
+  function setSelected(id: string | null) { selectedId = id; }
+
+  return { layer, setFilter, setHovered, setSelected };
 }
