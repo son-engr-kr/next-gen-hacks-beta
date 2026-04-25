@@ -56,10 +56,10 @@ function createWindowTexture(
 }
 
 function ratingToEmissiveColor(rating: number): THREE.Color {
-  if (rating >= 4.5) return new THREE.Color(0.6, 0.45, 0.0);
-  if (rating >= 4.0) return new THREE.Color(0.4, 0.25, 0.0);
-  if (rating >= 3.5) return new THREE.Color(0.2, 0.08, 0.0);
-  return new THREE.Color(0.1, 0.02, 0.0);
+  if (rating >= 4.5) return new THREE.Color(0.95, 0.7, 0.05);
+  if (rating >= 4.0) return new THREE.Color(0.7, 0.45, 0.05);
+  if (rating >= 3.5) return new THREE.Color(0.45, 0.18, 0.02);
+  return new THREE.Color(0.25, 0.06, 0.02);
 }
 
 function ratingToColor(rating: number): THREE.Color {
@@ -95,7 +95,7 @@ function makeWallMat(texture: THREE.CanvasTexture, rating: number, metalBoost = 
     map: texture,
     color: ratingToColor(rating),
     emissive: ratingToEmissiveColor(rating),
-    emissiveIntensity: 0.3 + metalBoost * 0.2,
+    emissiveIntensity: 0.6 + metalBoost * 0.3,
     metalness: Math.min(1, (rating >= 4.5 ? 0.6 : 0.2) + metalBoost),
     roughness: Math.max(0.1, (rating >= 4.5 ? 0.3 : 0.7) - metalBoost),
     side: THREE.BackSide,
@@ -105,8 +105,8 @@ function makeWallMat(texture: THREE.CanvasTexture, rating: number, metalBoost = 
 function makeTopMat(rating: number, premium = false) {
   return new THREE.MeshStandardMaterial({
     color:   premium ? new THREE.Color("#FFD700") : new THREE.Color("#ffffff"),
-    emissive: premium ? new THREE.Color(0.8, 0.6, 0.0) : ratingToEmissiveColor(rating),
-    emissiveIntensity: premium ? 0.4 : 0.15,
+    emissive: premium ? new THREE.Color(1.0, 0.78, 0.05) : ratingToEmissiveColor(rating),
+    emissiveIntensity: premium ? 0.7 : 0.35,
     metalness: premium ? 0.9 : 0.8,
     roughness: premium ? 0.1 : 0.2,
     side: THREE.BackSide,
@@ -147,7 +147,11 @@ function placeGlbModel(template: THREE.Group, targetW: number, targetH: number):
   clone.traverse((child) => {
     if ((child as THREE.Mesh).isMesh) {
       const m = child as THREE.Mesh;
-      const ds = (mat: THREE.Material) => { mat.side = THREE.DoubleSide; };
+      const ds = (mat: THREE.Material) => {
+        mat.side = THREE.DoubleSide;
+        const std = mat as THREE.MeshStandardMaterial;
+        if (std.envMapIntensity !== undefined) std.envMapIntensity = 2.0;
+      };
       Array.isArray(m.material) ? m.material.forEach(ds) : m.material && ds(m.material);
     }
   });
@@ -211,20 +215,13 @@ function createBuildingGroup(r: Restaurant, refMerc: maplibregl.MercatorCoordina
   const merc = maplibregl.MercatorCoordinate.fromLngLat([r.lng, r.lat], 0);
   const outer = new THREE.Group();
   outer.position.set(merc.x - refMerc.x, merc.y - refMerc.y, 0);
-  let inner: THREE.Group;
 
+  // Only landmarks with a category-themed GLB get a building mesh.
+  // Anything else (non-landmark, or landmark with missing themed GLB) renders as a floating food icon only.
   if (tier === "landmark") {
-    const tpl = models?.[`landmark_${r.category}` as LandmarkModelKey] ?? models?.["building_major"];
-    inner = tpl ? placeGlbModel(tpl, 35 * s, r.reviewCount * 1.2 * s) : buildProceduralLandmark(r, s);
-  } else if (tier === "major") {
-    inner = models?.["building_major"] ? placeGlbModel(models["building_major"]!, 26 * s, r.reviewCount * 0.9 * s) : buildProceduralMajor(r, s);
-  } else if (tier === "mid") {
-    inner = models?.["building_mid"] ? placeGlbModel(models["building_mid"]!, 18 * s, r.reviewCount * 0.7 * s) : buildProceduralMid(r, s);
-  } else {
-    const hM = Math.max(30, r.reviewCount * 0.6), bM = 12 + Math.min(r.reviewCount * 0.01, 8);
-    inner = models?.["building_regular"] ? placeGlbModel(models["building_regular"]!, bM * s, hM * s) : buildProceduralRegular(r, s);
+    const tpl = models?.[`landmark_${r.category}` as LandmarkModelKey];
+    if (tpl) outer.add(placeGlbModel(tpl, 50 * s, r.reviewCount * 1.7 * s));
   }
-  outer.add(inner);
   return outer;
 }
 
@@ -256,60 +253,76 @@ async function loadFoodModels(loader: GLTFLoader): Promise<FoodModels> {
 
 // ── Feature marker system ──────────────────────────────────────────────────────
 //
-// Each restaurant feature is shown as a small glowing octahedron (gem) floating
-// just above the ground beside the building. Multiple features = a compact row
-// of gems. A trending building also gets a vertical light-beam column.
-//
-// Gem color guide:
-//   orange = Trending   sky-blue = Wheelchair   green = Free parking
-//   blue   = Paid park  gold     = Valet         purple = Live music
-//   lime   = Dogs       pink     = Cocktails
+// Each restaurant feature is shown as a small icon sprite floating just above
+// the ground beside the building. Multiple features = a compact row of sprites.
+// A trending building also gets a vertical light-beam column.
+
+type FeatureIconKey =
+  | "trending" | "wheelchair"
+  | "parking_free" | "parking_paid" | "parking_valet"
+  | "live_music" | "dogs" | "cocktails";
+
+const FEATURE_ICON_PATHS: Record<FeatureIconKey, string> = {
+  trending:       "/icons/trending.svg",
+  wheelchair:     "/icons/wheelchair.svg",
+  parking_free:   "/icons/parking_free.svg",
+  parking_paid:   "/icons/parking_paid.svg",
+  parking_valet:  "/icons/parking_valet.svg",
+  live_music:     "/icons/live_music.svg",
+  dogs:           "/icons/dogs.svg",
+  cocktails:      "/icons/cocktails.svg",
+};
+
+const featureIconTextures: Partial<Record<FeatureIconKey, THREE.Texture>> = {};
+
+function getFeatureIconTexture(key: FeatureIconKey): THREE.Texture {
+  let tex = featureIconTextures[key];
+  if (!tex) {
+    tex = new THREE.TextureLoader().load(FEATURE_ICON_PATHS[key]);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    featureIconTextures[key] = tex;
+  }
+  return tex;
+}
 
 interface FeatureMarker {
   mesh: THREE.Mesh;
   baseZ: number;
   bobOffset: number;
-  restaurantIndex: number;
+  restaurantIdx: number;
 }
 
-/** Small glowing octahedron (diamond-shaped gem) */
-function createFeatureGem(color: string, emissiveColor: string, s: number): THREE.Mesh {
-  const geo = new THREE.OctahedronGeometry(2.2 * s);
-  const mat = new THREE.MeshStandardMaterial({
-    color,
-    emissive: emissiveColor,
-    emissiveIntensity: 1.0,
-    metalness: 0.5,
-    roughness: 0.15,
+/** Vertical plane mesh showing a feature icon next to a building. */
+function createFeatureIcon(key: FeatureIconKey, s: number): THREE.Mesh {
+  const size = 8 * s;
+  const geo = new THREE.PlaneGeometry(size, size);
+  // Stand the plane upright (normal along +Y) so it's visible from map-tilt views.
+  geo.rotateX(Math.PI / 2);
+  const mat = new THREE.MeshBasicMaterial({
+    map: getFeatureIconTexture(key),
+    transparent: true,
     side: THREE.DoubleSide,
+    depthWrite: false,
   });
   return new THREE.Mesh(geo, mat);
 }
 
 /**
  * Vertical light-beam column for trending buildings.
- * Two concentric cones: outer translucent glow + inner bright core.
+ * Single translucent outer glow cone.
  */
 function createTrendingBeacon(topZ: number, s: number): THREE.Group {
   const group = new THREE.Group();
   const h = topZ + 40 * s;
 
   // Outer wide cone
-  const outerGeo = new THREE.CylinderGeometry(0.8 * s, 10 * s, h, 8, 1, true);
+  const outerGeo = new THREE.CylinderGeometry(0.8 * s, 22 * s, h, 8, 1, true);
   outerGeo.rotateX(Math.PI / 2);
   outerGeo.translate(0, 0, h / 2);
   group.add(new THREE.Mesh(outerGeo, new THREE.MeshStandardMaterial({
     color: "#ff6600", emissive: "#ff4400", emissiveIntensity: 0.5,
     transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false,
-  })));
-
-  // Inner narrow core
-  const innerGeo = new THREE.CylinderGeometry(0.3 * s, 3 * s, h, 6, 1, true);
-  innerGeo.rotateX(Math.PI / 2);
-  innerGeo.translate(0, 0, h / 2);
-  group.add(new THREE.Mesh(innerGeo, new THREE.MeshStandardMaterial({
-    color: "#ffaa00", emissive: "#ff8800", emissiveIntensity: 1.0,
-    transparent: true, opacity: 0.30, side: THREE.DoubleSide, depthWrite: false,
   })));
 
   return group;
@@ -334,9 +347,9 @@ export function createBuildingCustomLayer(
   const s = refMerc.meterInMercatorCoordinateUnits() * 4;
 
   let buildingGroups: THREE.Group[] = [];
-  let foodIconGroups: { outer: THREE.Group; baseZ: number; restaurantIndex: number }[] = [];
+  let foodIconGroups: { outer: THREE.Group; baseZ: number; restaurantIdx: number }[] = [];
   let featureMarkers: FeatureMarker[] = [];
-  let trendingBeacons: { group: THREE.Group; restaurantIndex: number }[] = [];
+  let trendingBeacons: { group: THREE.Group; restaurantIdx: number }[] = [];
 
   // ── Voice filter state ─────────────────────────────────────────────────────
   let filteredIds: Set<string> | null = null;
@@ -361,33 +374,33 @@ export function createBuildingCustomLayer(
       const baseW = getBuildingBaseW(r, s);
 
       // Collect active features in priority order
-      const features: { color: string; emissive: string }[] = [];
-      if (r.isTrending)              features.push({ color: "#ff8c00", emissive: "#ff4400" });
-      if (r.isWheelchairAccessible)  features.push({ color: "#00bfff", emissive: "#007fff" });
-      if (r.parkingType === "free")  features.push({ color: "#22c55e", emissive: "#15803d" });
-      if (r.parkingType === "paid")  features.push({ color: "#60a5fa", emissive: "#1d4ed8" });
-      if (r.parkingType === "valet") features.push({ color: "#f59e0b", emissive: "#b45309" });
-      if (r.hasLiveMusic)            features.push({ color: "#a855f7", emissive: "#7c3aed" });
-      if (r.allowsDogs)              features.push({ color: "#4ade80", emissive: "#16a34a" });
-      if (r.servesCocktails)         features.push({ color: "#ec4899", emissive: "#be185d" });
+      const features: FeatureIconKey[] = [];
+      if (r.isTrending)              features.push("trending");
+      if (r.isWheelchairAccessible)  features.push("wheelchair");
+      if (r.parkingType === "free")  features.push("parking_free");
+      if (r.parkingType === "paid")  features.push("parking_paid");
+      if (r.parkingType === "valet") features.push("parking_valet");
+      if (r.hasLiveMusic)            features.push("live_music");
+      if (r.allowsDogs)              features.push("dogs");
+      if (r.servesCocktails)         features.push("cocktails");
 
       if (features.length > 0) {
-        const gemR    = 2.2 * s;
-        const spacing = gemR * 3.0;
+        const iconR   = 3 * s;
+        const spacing = iconR * 2.4;
         const startX  = bx + baseW * 0.72;
         const startY  = by + baseW * 0.72;
         // Center the row around the diagonal offset
         const rowOffset = ((features.length - 1) * spacing) / 2;
 
-        features.forEach((feat, fi) => {
-          const mesh = createFeatureGem(feat.color, feat.emissive, s);
+        features.forEach((key, fi) => {
+          const mesh = createFeatureIcon(key, s);
           mesh.position.set(
             startX + fi * spacing - rowOffset,
             startY,
-            gemR + 1.5 * s,
+            iconR + 1.5 * s,
           );
           scene.add(mesh);
-          featureMarkers.push({ mesh, baseZ: gemR + 1.5 * s, bobOffset: ri * 0.9 + fi * 0.5, restaurantIndex: ri });
+          featureMarkers.push({ mesh, baseZ: iconR + 1.5 * s, bobOffset: ri * 0.9 + fi * 0.5, restaurantIdx: ri });
         });
       }
 
@@ -397,7 +410,7 @@ export function createBuildingCustomLayer(
         const beacon = createTrendingBeacon(topZ, s);
         beacon.position.set(bx, by, 0);
         scene.add(beacon);
-        trendingBeacons.push({ group: beacon, restaurantIndex: ri });
+        trendingBeacons.push({ group: beacon, restaurantIdx: ri });
       }
     });
   }
@@ -431,7 +444,8 @@ export function createBuildingCustomLayer(
 
       scene.add(g);
       buildingGroups.push(g);
-      buildingTopZMap.set(r.id, new THREE.Box3().setFromObject(g).max.z);
+      const topZ = new THREE.Box3().setFromObject(g).max.z;
+      buildingTopZMap.set(r.id, isFinite(topZ) ? topZ : 32 * s);
     }
 
     rebuildGroundIndicators();
@@ -505,23 +519,400 @@ export function createBuildingCustomLayer(
   function rebuildFoodIcons(food: FoodModels, buildings: BuildingModels | null) {
     foodIconGroups.forEach(({ outer }) => scene.remove(outer));
     foodIconGroups = [];
-    const SIZE = 14 * s, GAP = 6 * s;
+    const SIZE = 22 * s, GAP = 8 * s;
+
+    const NON_LANDMARK_FLOAT_Z = 28 * s;
 
     for (let i = 0; i < restaurants.length; i++) {
       const r = restaurants[i];
       const template = food[r.category];
       if (!template) continue;
       const tier = getBuildingTier(r.reviewCount, r.rating);
+      // Only skip food when a themed landmark building is actually rendered.
       if (tier === "landmark" && buildings?.[`landmark_${r.category}` as LandmarkModelKey]) continue;
 
-      const topZ  = new THREE.Box3().setFromObject(buildingGroups[i]).max.z;
+      const buildingTopZ = new THREE.Box3().setFromObject(buildingGroups[i]).max.z;
+      const topZ = isFinite(buildingTopZ) ? buildingTopZ : NON_LANDMARK_FLOAT_Z;
       const icon  = placeGlbModel(template, SIZE, SIZE);
       const merc  = maplibregl.MercatorCoordinate.fromLngLat([r.lng, r.lat], 0);
       const outer = new THREE.Group();
       outer.position.set(merc.x - refMerc.x, merc.y - refMerc.y, topZ + GAP);
       outer.add(icon);
       scene.add(outer);
-      foodIconGroups.push({ outer, baseZ: topZ + GAP, restaurantIndex: i });
+      foodIconGroups.push({ outer, baseZ: topZ + GAP, restaurantIdx: i });
+    }
+  }
+
+  // ── Trees (sampled from park / wood polygons) ──────────────────────────────
+  const treeGroup = new THREE.Group();
+  const placedTreeKeys = new Set<string>();
+  const TREE_LAYER_IDS = ["park", "landcover_wood", "landcover_grass"];
+
+  // Shared tree materials — clearly, vividly green
+  const TREE_FOLIAGE_COLORS = ["#2d9c40", "#3aa84a", "#4cb55a", "#1f8a3d"];
+  const trunkMat = new THREE.MeshStandardMaterial({ color: "#7a5634", roughness: 0.9 });
+  const foliageMats = TREE_FOLIAGE_COLORS.map((c) => new THREE.MeshStandardMaterial({
+    color: c, emissive: new THREE.Color(c).multiplyScalar(0.4), emissiveIntensity: 0.5, roughness: 0.55,
+  }));
+  const trunkGeo = new THREE.CylinderGeometry(0.5, 0.7, 4, 6);
+  trunkGeo.rotateX(Math.PI / 2);
+  trunkGeo.translate(0, 0, 2);
+  const foliageGeo = new THREE.ConeGeometry(2.6, 6, 6);
+  foliageGeo.rotateX(Math.PI / 2);
+  foliageGeo.translate(0, 0, 4 + 3);
+
+  function makeTree(scale: number, foliageMat: THREE.Material): THREE.Group {
+    const g = new THREE.Group();
+    g.add(new THREE.Mesh(trunkGeo, trunkMat));
+    g.add(new THREE.Mesh(foliageGeo, foliageMat));
+    g.scale.setScalar(scale);
+    g.rotation.z = Math.random() * Math.PI * 2;
+    return g;
+  }
+
+  function pointInRing(x: number, y: number, ring: number[][]): boolean {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const xi = ring[i][0], yi = ring[i][1];
+      const xj = ring[j][0], yj = ring[j][1];
+      const intersect = ((yi > y) !== (yj > y)) && (x < ((xj - xi) * (y - yi)) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
+  function sampleTreesFromVisiblePolygons() {
+    if (placedTreeKeys.size > 1500) return; // cap to keep perf sane
+
+    const layersInStyle = TREE_LAYER_IDS.filter((id) => map.getLayer(id));
+    if (layersInStyle.length === 0) return;
+
+    let features: maplibregl.MapGeoJSONFeature[];
+    try {
+      features = map.queryRenderedFeatures({ layers: layersInStyle });
+    } catch { return; }
+
+    for (const f of features) {
+      const geom = f.geometry as GeoJSON.Polygon | GeoJSON.MultiPolygon;
+      const polygons: number[][][] =
+        geom.type === "Polygon" ? [geom.coordinates[0]]
+        : geom.type === "MultiPolygon" ? geom.coordinates.map((p) => p[0])
+        : [];
+
+      for (const ring of polygons) {
+        if (ring.length < 3) continue;
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const [x, y] of ring) {
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+        }
+        const bw = maxX - minX, bh = maxY - minY;
+        if (bw < 0.00005 || bh < 0.00005) continue;
+
+        // Density: half again from previous
+        const areaScore = bw * bh * 1e7;
+        const targetCount = Math.min(7, Math.max(1, Math.round(areaScore * 0.4)));
+
+        let placed = 0, attempts = 0;
+        while (placed < targetCount && attempts < targetCount * 6) {
+          attempts++;
+          const lng = minX + Math.random() * bw;
+          const lat = minY + Math.random() * bh;
+          if (!pointInRing(lng, lat, ring)) continue;
+
+          // Quantize key to ~6m grid so re-queries don't double-place
+          const key = `${Math.round(lng * 50000)}:${Math.round(lat * 50000)}`;
+          if (placedTreeKeys.has(key)) continue;
+          placedTreeKeys.add(key);
+
+          const merc = maplibregl.MercatorCoordinate.fromLngLat([lng, lat], 0);
+          const tree = makeTree(s * (0.35 + Math.random() * 0.25), foliageMats[Math.floor(Math.random() * foliageMats.length)]);
+          tree.position.set(merc.x - refMerc.x, merc.y - refMerc.y, 0);
+          treeGroup.add(tree);
+          placed++;
+        }
+      }
+    }
+  }
+
+  // ── Subway/trains (sampled along railway polylines) ────────────────────────
+  const trainGroup = new THREE.Group();
+  const placedRailwayKeys = new Set<string>();
+  const TRAIN_LAYER_IDS = ["railway", "railway_transit"];
+  const TRAIN_CAP = 28;
+
+  interface TrainMover {
+    group: THREE.Group;
+    segments: { fx: number; fy: number; tx: number; ty: number; len: number }[];
+    totalLen: number;
+    progress: number; // mercator-units traveled, mod totalLen
+    speed: number;    // mercator-units per second
+  }
+  const trains: TrainMover[] = [];
+
+  // Shared train geo/mats — dark gray subway liveries
+  const TRAIN_LIVERIES = [
+    { body: "#3d4148", emissive: "#14161a" }, // dark steel
+    { body: "#4a4d54", emissive: "#181a1f" }, // charcoal
+    { body: "#5c606a", emissive: "#1f2228" }, // slate gray
+    { body: "#2d3036", emissive: "#0e1014" }, // graphite
+  ];
+  const carLen = 4, carW = 2, carH = 2.4, carGap = 0.4;
+  const carGeo = new THREE.BoxGeometry(carLen, carW, carH);
+  carGeo.translate(0, 0, carH / 2 + 0.3);
+
+  function makeTrain(): THREE.Group {
+    const livery = TRAIN_LIVERIES[Math.floor(Math.random() * TRAIN_LIVERIES.length)];
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: livery.body, emissive: livery.emissive, emissiveIntensity: 0.35,
+      metalness: 0.55, roughness: 0.45, side: THREE.BackSide,
+    });
+    const headMat = new THREE.MeshStandardMaterial({
+      color: "#6a6e76", emissive: "#fff0c8", emissiveIntensity: 0.45,
+      metalness: 0.5, roughness: 0.4, side: THREE.BackSide,
+    });
+    const g = new THREE.Group();
+    const cars = 3;
+    for (let i = 0; i < cars; i++) {
+      const mesh = new THREE.Mesh(carGeo, i === 0 ? headMat : bodyMat);
+      mesh.position.x = -i * (carLen + carGap);
+      g.add(mesh);
+    }
+    return g;
+  }
+
+  function sampleTrainsFromVisibleLines() {
+    if (trains.length >= TRAIN_CAP) return;
+
+    const layersInStyle = TRAIN_LAYER_IDS.filter((id) => map.getLayer(id));
+    if (layersInStyle.length === 0) return;
+
+    let features: maplibregl.MapGeoJSONFeature[];
+    try {
+      features = map.queryRenderedFeatures({ layers: layersInStyle });
+    } catch { return; }
+
+    for (const f of features) {
+      if (trains.length >= TRAIN_CAP) break;
+      const geom = f.geometry as GeoJSON.LineString | GeoJSON.MultiLineString;
+      const lines: number[][][] =
+        geom.type === "LineString" ? [geom.coordinates]
+        : geom.type === "MultiLineString" ? geom.coordinates
+        : [];
+
+      for (const coords of lines) {
+        if (coords.length < 2) continue;
+
+        // Dedup: hash both endpoints (rounded)
+        const a = coords[0], b = coords[coords.length - 1];
+        const key = `${Math.round(a[0] * 50000)}:${Math.round(a[1] * 50000)}|${Math.round(b[0] * 50000)}:${Math.round(b[1] * 50000)}`;
+        if (placedRailwayKeys.has(key)) continue;
+        placedRailwayKeys.add(key);
+
+        // Build segments in world (mercator-relative) coords
+        const segments: TrainMover["segments"] = [];
+        let totalLen = 0;
+        for (let i = 0; i < coords.length - 1; i++) {
+          const m1 = maplibregl.MercatorCoordinate.fromLngLat([coords[i][0], coords[i][1]], 0);
+          const m2 = maplibregl.MercatorCoordinate.fromLngLat([coords[i + 1][0], coords[i + 1][1]], 0);
+          const fx = m1.x - refMerc.x, fy = m1.y - refMerc.y;
+          const tx = m2.x - refMerc.x, ty = m2.y - refMerc.y;
+          const dx = tx - fx, dy = ty - fy;
+          const len = Math.hypot(dx, dy);
+          if (len > 0) { segments.push({ fx, fy, tx, ty, len }); totalLen += len; }
+        }
+        if (totalLen < s * 80) continue; // skip short stubs
+
+        const train = makeTrain();
+        train.scale.setScalar(s * 1.6);
+        trainGroup.add(train);
+        trains.push({
+          group: train,
+          segments,
+          totalLen,
+          progress: Math.random() * totalLen,
+          speed: s * (12 + Math.random() * 18),
+        });
+      }
+    }
+  }
+
+  let lastTrainT = Date.now() / 1000;
+  function updateTrains() {
+    const now = Date.now() / 1000;
+    const dt = Math.min(0.1, now - lastTrainT);
+    lastTrainT = now;
+    for (const t of trains) {
+      t.progress = (t.progress + t.speed * dt) % t.totalLen;
+      let acc = 0;
+      for (const seg of t.segments) {
+        if (acc + seg.len > t.progress) {
+          const localT = (t.progress - acc) / seg.len;
+          t.group.position.x = seg.fx + (seg.tx - seg.fx) * localT;
+          t.group.position.y = seg.fy + (seg.ty - seg.fy) * localT;
+          t.group.rotation.z = Math.atan2(seg.ty - seg.fy, seg.tx - seg.fx);
+          break;
+        }
+        acc += seg.len;
+      }
+    }
+  }
+
+  // ── Airplanes (sampled from runway lines, takeoff/landing cycle) ───────────
+  const planeGroup = new THREE.Group();
+  const placedRunwayKeys = new Set<string>();
+  const RUNWAY_LAYER_IDS = ["aeroway-runway"];
+  const PLANE_CAP = 12;
+
+  interface Plane {
+    group: THREE.Group;
+    approachStart: { x: number; y: number; z: number };
+    touchdown: { x: number; y: number };
+    liftoff: { x: number; y: number };
+    climbExit: { x: number; y: number; z: number };
+    heading: number;
+    cycleDur: number;
+    phaseOffset: number;
+  }
+  const planes: Plane[] = [];
+
+  function makePlane(): THREE.Group {
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: "#eaecef", emissive: "#888a92", emissiveIntensity: 0.25,
+      metalness: 0.6, roughness: 0.35, side: THREE.BackSide,
+    });
+    const accentMat = new THREE.MeshStandardMaterial({
+      color: "#3b82f6", emissive: "#1e40af", emissiveIntensity: 0.4,
+      metalness: 0.5, roughness: 0.4, side: THREE.BackSide,
+    });
+    const lightR = new THREE.MeshStandardMaterial({
+      color: "#ff3030", emissive: "#ff0000", emissiveIntensity: 1.6, side: THREE.BackSide,
+    });
+    const lightL = new THREE.MeshStandardMaterial({
+      color: "#3030ff", emissive: "#0000ff", emissiveIntensity: 1.6, side: THREE.BackSide,
+    });
+    const g = new THREE.Group();
+    // Fuselage along +x (forward)
+    const fus = new THREE.Mesh(new THREE.BoxGeometry(10, 1.3, 1.3), bodyMat);
+    g.add(fus);
+    // Nose accent
+    const nose = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.05, 1.05), accentMat);
+    nose.position.x = 5.0;
+    g.add(nose);
+    // Wings (along y)
+    const wings = new THREE.Mesh(new THREE.BoxGeometry(2.8, 9, 0.3), bodyMat);
+    g.add(wings);
+    // Vertical tail
+    const vtail = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.3, 1.8), bodyMat);
+    vtail.position.set(-4.0, 0, 1.0);
+    g.add(vtail);
+    // Horizontal tail
+    const htail = new THREE.Mesh(new THREE.BoxGeometry(1.4, 3.2, 0.25), bodyMat);
+    htail.position.set(-4.0, 0, 0.4);
+    g.add(htail);
+    // Wingtip lights (red right, blue left)
+    const lr = new THREE.Mesh(new THREE.SphereGeometry(0.28, 6, 6), lightR);
+    lr.position.set(0, 4.5, 0.1); g.add(lr);
+    const ll = new THREE.Mesh(new THREE.SphereGeometry(0.28, 6, 6), lightL);
+    ll.position.set(0, -4.5, 0.1); g.add(ll);
+    g.rotation.order = "ZYX"; // yaw, then local pitch
+    return g;
+  }
+
+  function samplePlanesFromRunways() {
+    if (planes.length >= PLANE_CAP) return;
+    const layersInStyle = RUNWAY_LAYER_IDS.filter((id) => map.getLayer(id));
+    if (layersInStyle.length === 0) return;
+    let features: maplibregl.MapGeoJSONFeature[];
+    try { features = map.queryRenderedFeatures({ layers: layersInStyle }); } catch { return; }
+
+    for (const f of features) {
+      if (planes.length >= PLANE_CAP) break;
+      const geom = f.geometry as GeoJSON.LineString | GeoJSON.MultiLineString;
+      const lines: number[][][] =
+        geom.type === "LineString" ? [geom.coordinates]
+        : geom.type === "MultiLineString" ? geom.coordinates : [];
+
+      for (const coords of lines) {
+        if (coords.length < 2) continue;
+        const a = coords[0], b = coords[coords.length - 1];
+        const key = `${Math.round(a[0]*50000)}:${Math.round(a[1]*50000)}|${Math.round(b[0]*50000)}:${Math.round(b[1]*50000)}`;
+        if (placedRunwayKeys.has(key)) continue;
+        placedRunwayKeys.add(key);
+
+        const m1 = maplibregl.MercatorCoordinate.fromLngLat([a[0], a[1]], 0);
+        const m2 = maplibregl.MercatorCoordinate.fromLngLat([b[0], b[1]], 0);
+        const sx = m1.x - refMerc.x, sy = m1.y - refMerc.y;
+        const ex = m2.x - refMerc.x, ey = m2.y - refMerc.y;
+        const dx = ex - sx, dy = ey - sy;
+        const rwLen = Math.hypot(dx, dy);
+        if (rwLen < s * 200) continue; // skip short
+
+        const heading = Math.atan2(dy, dx);
+        const ux = Math.cos(heading), uy = Math.sin(heading);
+        const cruiseAlt = s * 220;
+        const offsetIn = s * 1400;
+        const offsetOut = s * 1600;
+
+        const approachStart = { x: sx - ux * offsetIn, y: sy - uy * offsetIn, z: cruiseAlt };
+        const touchdown = { x: sx, y: sy };
+        const liftoff = { x: ex, y: ey };
+        const climbExit = { x: ex + ux * offsetOut, y: ey + uy * offsetOut, z: cruiseAlt };
+
+        // Two planes, staggered phase so action is always visible
+        for (let i = 0; i < 2; i++) {
+          if (planes.length >= PLANE_CAP) break;
+          const plane = makePlane();
+          plane.scale.setScalar(s * 2.6);
+          planeGroup.add(plane);
+          planes.push({
+            group: plane,
+            approachStart, touchdown, liftoff, climbExit, heading,
+            cycleDur: 24 + Math.random() * 8,
+            phaseOffset: i * 0.5 + Math.random() * 0.04,
+          });
+        }
+      }
+    }
+  }
+
+  function updatePlanes(now: number) {
+    for (const p of planes) {
+      const phase = (((now / p.cycleDur) + p.phaseOffset) % 1 + 1) % 1;
+      let x = 0, y = 0, z = 0, pitch = 0;
+      let visible = true;
+
+      if (phase < 0.20) {
+        // APPROACH — descend toward touchdown
+        const u = phase / 0.20;
+        x = p.approachStart.x + (p.touchdown.x - p.approachStart.x) * u;
+        y = p.approachStart.y + (p.touchdown.y - p.approachStart.y) * u;
+        z = p.approachStart.z * (1 - u);
+        pitch = -0.10;
+      } else if (phase < 0.30) {
+        // ROLL on runway
+        const u = (phase - 0.20) / 0.10;
+        x = p.touchdown.x + (p.liftoff.x - p.touchdown.x) * u;
+        y = p.touchdown.y + (p.liftoff.y - p.touchdown.y) * u;
+        z = 0;
+        pitch = 0;
+      } else if (phase < 0.50) {
+        // CLIMB — takeoff and ascend
+        const u = (phase - 0.30) / 0.20;
+        x = p.liftoff.x + (p.climbExit.x - p.liftoff.x) * u;
+        y = p.liftoff.y + (p.climbExit.y - p.liftoff.y) * u;
+        z = p.climbExit.z * u;
+        pitch = 0.20;
+      } else {
+        // PAUSE — hide between cycles
+        visible = false;
+      }
+
+      p.group.visible = visible;
+      if (visible) {
+        p.group.position.set(x, y, z);
+        p.group.rotation.set(0, pitch, p.heading);
+      }
     }
   }
 
@@ -534,11 +925,24 @@ export function createBuildingCustomLayer(
 
     onAdd(_map: maplibregl.Map, gl: WebGLRenderingContext) {
       scene = new THREE.Scene();
-      scene.add(new THREE.AmbientLight(0xffffff, 3.0));
-      const dir = new THREE.DirectionalLight(0xffeedd, 2.5); dir.position.set(0.5, -0.3, 1.0); scene.add(dir);
-      const dir2 = new THREE.DirectionalLight(0x8888ff, 1.0); dir2.position.set(-0.3, 0.5, 0.8); scene.add(dir2);
+      scene.add(new THREE.AmbientLight(0xffffff, 4.5));
+      const dir = new THREE.DirectionalLight(0xfff0d0, 3.5); dir.position.set(0.5, -0.3, 1.0); scene.add(dir);
+      const dir2 = new THREE.DirectionalLight(0xaab0ff, 1.6); dir2.position.set(-0.3, 0.5, 0.8); scene.add(dir2);
 
-      rebuildBuildings(null);
+      scene.add(treeGroup);
+      scene.add(trainGroup);
+      scene.add(planeGroup);
+      // The render loop calls triggerRepaint every frame, so "idle" never fires.
+      // Sample on moveend (after pan/zoom) and once shortly after add (initial parks).
+      const sampleAndRepaint = () => {
+        sampleTreesFromVisiblePolygons();
+        sampleTrainsFromVisibleLines();
+        samplePlanesFromRunways();
+        map.triggerRepaint();
+      };
+      map.on("moveend", sampleAndRepaint);
+      setTimeout(sampleAndRepaint, 600);
+      setTimeout(sampleAndRepaint, 1500);
 
       for (const r of restaurants.filter((r) => r.isTrending)) {
         const merc = maplibregl.MercatorCoordinate.fromLngLat([r.lng, r.lat], 0);
@@ -551,16 +955,23 @@ export function createBuildingCustomLayer(
       camera = new THREE.Camera();
       renderer = new THREE.WebGLRenderer({ canvas: map.getCanvas(), context: gl, antialias: true });
       renderer.autoClear = false;
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.6;
 
       const pmrem = new THREE.PMREMGenerator(renderer);
       scene.environment = pmrem.fromScene(new RoomEnvironment()).texture;
+      scene.environmentIntensity = 1.6;
       pmrem.dispose();
+
+      // Soft sky/ground hemisphere fill — natural daytime feel
+      scene.add(new THREE.HemisphereLight(0xc8dfff, 0xfff0d0, 1.4));
 
       const draco = new DRACOLoader(); draco.setDecoderPath("/draco/");
       const loader = new GLTFLoader(); loader.setDRACOLoader(draco);
       Promise.all([loadBuildingModels(loader), loadFoodModels(loader)]).then(([buildings, food]) => {
-        if (Object.keys(buildings).length > 0) rebuildBuildings(buildings);
-        if (Object.keys(food).length > 0)      rebuildFoodIcons(food, buildings);
+        rebuildBuildings(Object.keys(buildings).length > 0 ? buildings : null);
+        if (Object.keys(food).length > 0) rebuildFoodIcons(food, Object.keys(buildings).length > 0 ? buildings : null);
         map.triggerRepaint();
       });
     },
@@ -569,7 +980,10 @@ export function createBuildingCustomLayer(
     render(_gl: WebGLRenderingContext, args: any) {
       const t = Date.now() / 1000;
 
-      // ── Voice filter: animate building scale (sink / rise) ─────────────────
+      updateTrains();
+      updatePlanes(t);
+
+      // ── Voice filter: animate building scale (sink / vanish / rise) ────────
       // VISIBLE_THRESHOLD: once the lerp gets close enough to zero, hide the
       // entire group so the bottom face/footprint vanishes too. When un-
       // filtering we restore visibility before animating back up.
@@ -592,28 +1006,35 @@ export function createBuildingCustomLayer(
         }
       });
 
-      // Bob food icons + hide when their building is filtered out
-      foodIconGroups.forEach(({ outer, baseZ, restaurantIndex }, i) => {
-        outer.position.z = baseZ + Math.sin(t * 1.5 + i * 0.8) * 5 * s;
-        const buildingScale = currentScales[restaurantIndex] ?? 1;
-        const buildingTarget = targetScales[restaurantIndex] ?? 1;
-        outer.visible = buildingScale > VISIBLE_THRESHOLD || buildingTarget > VISIBLE_THRESHOLD;
+      // Bob food icons (hidden when their building is filtered out)
+      foodIconGroups.forEach(({ outer, baseZ, restaurantIdx }, i) => {
+        const buildingScale = currentScales[restaurantIdx] ?? 1;
+        const buildingTarget = targetScales[restaurantIdx] ?? 1;
+        const visible = buildingScale > VISIBLE_THRESHOLD || buildingTarget > VISIBLE_THRESHOLD;
+        outer.visible = visible;
+        if (visible) outer.position.z = baseZ + Math.sin(t * 1.5 + i * 0.8) * 5 * s;
       });
 
-      // Float + spin feature gems + hide when their building is filtered out
-      featureMarkers.forEach(({ mesh, baseZ, bobOffset, restaurantIndex }) => {
-        mesh.position.z = baseZ + Math.sin(t * 1.2 + bobOffset) * 1.8 * s;
-        mesh.rotation.z += 0.007;
-        const buildingScale = currentScales[restaurantIndex] ?? 1;
-        const buildingTarget = targetScales[restaurantIndex] ?? 1;
-        mesh.visible = buildingScale > VISIBLE_THRESHOLD || buildingTarget > VISIBLE_THRESHOLD;
+      // Float feature icons (vertical planes; bob along Z, billboard via map bearing).
+      const bearingRad = (map.getBearing() * Math.PI) / 180;
+      featureMarkers.forEach(({ mesh, baseZ, bobOffset, restaurantIdx }) => {
+        const buildingScale = currentScales[restaurantIdx] ?? 1;
+        const buildingTarget = targetScales[restaurantIdx] ?? 1;
+        const visible = buildingScale > VISIBLE_THRESHOLD || buildingTarget > VISIBLE_THRESHOLD;
+        mesh.visible = visible;
+        if (visible) {
+          mesh.position.z = baseZ + Math.sin(t * 1.2 + bobOffset) * 1.8 * s;
+          mesh.rotation.z = bearingRad;
+        }
       });
 
-      // Pulse trending beacons + hide when their building is filtered out
-      trendingBeacons.forEach(({ group, restaurantIndex }, i) => {
-        const buildingScale = currentScales[restaurantIndex] ?? 1;
-        const buildingTarget = targetScales[restaurantIndex] ?? 1;
-        group.visible = buildingScale > VISIBLE_THRESHOLD || buildingTarget > VISIBLE_THRESHOLD;
+      // Pulse trending beacons (hidden when their building is filtered out)
+      trendingBeacons.forEach(({ group, restaurantIdx }, i) => {
+        const buildingScale = currentScales[restaurantIdx] ?? 1;
+        const buildingTarget = targetScales[restaurantIdx] ?? 1;
+        const visible = buildingScale > VISIBLE_THRESHOLD || buildingTarget > VISIBLE_THRESHOLD;
+        group.visible = visible;
+        if (!visible) return;
         group.children.forEach((child, ci) => {
           const mat = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
           if (mat?.transparent) {
