@@ -796,14 +796,14 @@ async def voice_search(
     if matched:
         top = matched[:3]
         names = ", ".join(r.name for r in top)
-        extra = f" 외 {len(matched) - 3}곳" if len(matched) > 3 else ""
+        extra = f" and {len(matched) - 3} more" if len(matched) > 3 else ""
         response_text = (
-            f"조건에 맞는 식당이 {len(matched)}곳 있습니다. "
-            f"추천 순위: {names}{extra}. "
-            f"지도에서 확인해보세요!"
+            f"Found {len(matched)} restaurants matching your filters. "
+            f"Top picks: {names}{extra}. "
+            f"Check them out on the map!"
         )
     else:
-        response_text = "조건에 맞는 식당을 찾지 못했습니다. 조건을 조금 완화해보세요."
+        response_text = "No restaurants matched your filters. Try loosening the criteria."
 
     audio_base64 = ""
     if ELEVENLABS_API_KEY:

@@ -269,6 +269,7 @@ interface FeatureMarker {
   mesh: THREE.Mesh;
   baseZ: number;
   bobOffset: number;
+  restaurantIndex: number;
 }
 
 /** Small glowing octahedron (diamond-shaped gem) */
@@ -333,9 +334,9 @@ export function createBuildingCustomLayer(
   const s = refMerc.meterInMercatorCoordinateUnits() * 4;
 
   let buildingGroups: THREE.Group[] = [];
-  let foodIconGroups: { outer: THREE.Group; baseZ: number }[] = [];
+  let foodIconGroups: { outer: THREE.Group; baseZ: number; restaurantIndex: number }[] = [];
   let featureMarkers: FeatureMarker[] = [];
-  let trendingBeacons: THREE.Group[] = [];
+  let trendingBeacons: { group: THREE.Group; restaurantIndex: number }[] = [];
 
   // ── Voice filter state ─────────────────────────────────────────────────────
   let filteredIds: Set<string> | null = null;
@@ -349,7 +350,7 @@ export function createBuildingCustomLayer(
 
   function rebuildGroundIndicators() {
     featureMarkers.forEach(({ mesh }) => scene.remove(mesh));
-    trendingBeacons.forEach((g) => scene.remove(g));
+    trendingBeacons.forEach(({ group }) => scene.remove(group));
     featureMarkers = [];
     trendingBeacons = [];
 
@@ -386,7 +387,7 @@ export function createBuildingCustomLayer(
             gemR + 1.5 * s,
           );
           scene.add(mesh);
-          featureMarkers.push({ mesh, baseZ: gemR + 1.5 * s, bobOffset: ri * 0.9 + fi * 0.5 });
+          featureMarkers.push({ mesh, baseZ: gemR + 1.5 * s, bobOffset: ri * 0.9 + fi * 0.5, restaurantIndex: ri });
         });
       }
 
@@ -396,7 +397,7 @@ export function createBuildingCustomLayer(
         const beacon = createTrendingBeacon(topZ, s);
         beacon.position.set(bx, by, 0);
         scene.add(beacon);
-        trendingBeacons.push(beacon);
+        trendingBeacons.push({ group: beacon, restaurantIndex: ri });
       }
     });
   }
@@ -437,7 +438,7 @@ export function createBuildingCustomLayer(
 
     // Init scale arrays
     restaurants.forEach((_, i) => {
-      targetScales[i]  = filteredIds === null ? 1.0 : (filteredIds.has(restaurants[i].id) ? 1.0 : 0.05);
+      targetScales[i]  = filteredIds === null ? 1.0 : (filteredIds.has(restaurants[i].id) ? 1.0 : 0);
       currentScales[i] = buildingGroups[i]?.scale.z ?? 1.0;
     });
   }
@@ -494,7 +495,9 @@ export function createBuildingCustomLayer(
         const topZ = buildingTopZMap.get(r.id) ?? 50 * s;
         addSpotlight(r, topZ);
       } else {
-        targetScales[i] = 0.04;
+        // Sink completely. Render loop hides the group entirely once it
+        // shrinks below threshold so the bottom face also disappears.
+        targetScales[i] = 0;
       }
     });
   }
@@ -518,7 +521,7 @@ export function createBuildingCustomLayer(
       outer.position.set(merc.x - refMerc.x, merc.y - refMerc.y, topZ + GAP);
       outer.add(icon);
       scene.add(outer);
-      foodIconGroups.push({ outer, baseZ: topZ + GAP });
+      foodIconGroups.push({ outer, baseZ: topZ + GAP, restaurantIndex: i });
     }
   }
 
@@ -567,17 +570,17 @@ export function createBuildingCustomLayer(
       const t = Date.now() / 1000;
 
       // ── Voice filter: animate building scale (sink / rise) ─────────────────
+      // VISIBLE_THRESHOLD: once the lerp gets close enough to zero, hide the
+      // entire group so the bottom face/footprint vanishes too. When un-
+      // filtering we restore visibility before animating back up.
+      const VISIBLE_THRESHOLD = 0.02;
       buildingGroups.forEach((group, i) => {
         const target  = targetScales[i]  ?? 1.0;
         const current = currentScales[i] ?? 1.0;
         const next    = current + (target - current) * 0.08; // smooth lerp
         currentScales[i] = next;
-        group.scale.z = next;
-        // Fade gem markers for dimmed buildings
-        if (featureMarkers[i]) {
-          const mat = featureMarkers[i].mesh.material as THREE.MeshStandardMaterial;
-          if (mat) mat.opacity = Math.max(0.05, next);
-        }
+        group.scale.z = Math.max(next, 0.0001); // three.js dislikes scale=0
+        group.visible = next > VISIBLE_THRESHOLD || target > VISIBLE_THRESHOLD;
       });
 
       // Pulse spotlight beams
@@ -589,19 +592,28 @@ export function createBuildingCustomLayer(
         }
       });
 
-      // Bob food icons
-      foodIconGroups.forEach(({ outer, baseZ }, i) => {
+      // Bob food icons + hide when their building is filtered out
+      foodIconGroups.forEach(({ outer, baseZ, restaurantIndex }, i) => {
         outer.position.z = baseZ + Math.sin(t * 1.5 + i * 0.8) * 5 * s;
+        const buildingScale = currentScales[restaurantIndex] ?? 1;
+        const buildingTarget = targetScales[restaurantIndex] ?? 1;
+        outer.visible = buildingScale > VISIBLE_THRESHOLD || buildingTarget > VISIBLE_THRESHOLD;
       });
 
-      // Float + spin feature gems
-      featureMarkers.forEach(({ mesh, baseZ, bobOffset }) => {
+      // Float + spin feature gems + hide when their building is filtered out
+      featureMarkers.forEach(({ mesh, baseZ, bobOffset, restaurantIndex }) => {
         mesh.position.z = baseZ + Math.sin(t * 1.2 + bobOffset) * 1.8 * s;
         mesh.rotation.z += 0.007;
+        const buildingScale = currentScales[restaurantIndex] ?? 1;
+        const buildingTarget = targetScales[restaurantIndex] ?? 1;
+        mesh.visible = buildingScale > VISIBLE_THRESHOLD || buildingTarget > VISIBLE_THRESHOLD;
       });
 
-      // Pulse trending beacons
-      trendingBeacons.forEach((group, i) => {
+      // Pulse trending beacons + hide when their building is filtered out
+      trendingBeacons.forEach(({ group, restaurantIndex }, i) => {
+        const buildingScale = currentScales[restaurantIndex] ?? 1;
+        const buildingTarget = targetScales[restaurantIndex] ?? 1;
+        group.visible = buildingScale > VISIBLE_THRESHOLD || buildingTarget > VISIBLE_THRESHOLD;
         group.children.forEach((child, ci) => {
           const mat = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
           if (mat?.transparent) {
