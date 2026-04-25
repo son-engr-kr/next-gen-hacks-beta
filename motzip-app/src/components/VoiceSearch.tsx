@@ -54,7 +54,6 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
       const recorder = new MediaRecorder(stream, { mimeType });
       mediaRef.current = recorder;
 
-      // timeslice=200ms 로 chunk 단위 수집 — 짧은 녹음도 안전
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data);
       };
@@ -62,12 +61,20 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
       recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
         const blob = new Blob(chunksRef.current, { type: mimeType });
+        if (blob.size < 1000) {
+          setErrorMsg("Recording too short — please hold the mic and speak.");
+          setPhase("error");
+          return;
+        }
         await submitAudio(blob, mimeType);
       };
 
-      recorder.start(200);
+      // No timeslice: a single dataavailable fires at stop with a complete,
+      // valid WebM container. Slicing into 200ms chunks produced files that
+      // ElevenLabs rejected as corrupted whenever the user released quickly.
+      recorder.start();
     } catch {
-      setErrorMsg("마이크 접근이 거부됐어요. 브라우저 설정을 확인해주세요.");
+      setErrorMsg("Microphone access denied. Please check your browser settings.");
       setPhase("error");
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -88,14 +95,14 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
     setErrorMsg("");
     try {
       const form = new FormData();
-      // 빈 오디오 blob (서버에서 text_query 우선)
+      // Empty audio blob — server prefers text_query when present
       form.append("audio", new Blob([], { type: "audio/webm" }), "empty.webm");
       form.append("text_query", text.trim());
       form.append("user_lat", String(userLat));
       form.append("user_lng", String(userLng));
       await processForm(form);
     } catch (e) {
-      setErrorMsg(e instanceof Error ? e.message : "오류가 발생했어요.");
+      setErrorMsg(e instanceof Error ? e.message : "Something went wrong.");
       setPhase("error");
     }
   };
@@ -114,9 +121,9 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
     const matched = data.restaurants?.length ?? 0;
     if (matched > 0) {
       const top3 = data.restaurants.slice(0, 3).map((r: Restaurant) => r.name).join(", ");
-      setResponseText(`${matched}곳 발견: ${top3}${matched > 3 ? ` 외 ${matched - 3}곳` : ""}`);
+      setResponseText(`Found ${matched} places: ${top3}${matched > 3 ? ` and ${matched - 3} more` : ""}`);
     } else {
-      setResponseText("조건에 맞는 식당을 찾지 못했어요.");
+      setResponseText("No restaurants matched your filters.");
     }
 
     onResults(data.restaurants || []);
@@ -146,7 +153,7 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
       form.append("user_lng", String(userLng));
       await processForm(form);
     } catch (e) {
-      setErrorMsg(e instanceof Error ? e.message : "오류가 발생했어요.");
+      setErrorMsg(e instanceof Error ? e.message : "Something went wrong.");
       setPhase("error");
     }
   };
@@ -171,13 +178,13 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
         <div className="max-w-xs w-[300px] bg-gray-950/90 backdrop-blur-2xl rounded-2xl border border-white/[0.06] p-3 text-[12px] space-y-1.5 shadow-xl">
           {transcript && (
             <p className="text-gray-400 leading-relaxed">
-              <span className="text-gray-600 text-[10px] uppercase tracking-widest font-bold block mb-0.5">음성 인식</span>
+              <span className="text-gray-600 text-[10px] uppercase tracking-widest font-bold block mb-0.5">Transcript</span>
               {transcript}
             </p>
           )}
           {responseText && (
             <p className="text-emerald-300 font-medium leading-relaxed">
-              <span className="text-gray-600 text-[10px] uppercase tracking-widest font-bold block mb-0.5">결과</span>
+              <span className="text-gray-600 text-[10px] uppercase tracking-widest font-bold block mb-0.5">Result</span>
               {responseText}
             </p>
           )}
@@ -216,7 +223,7 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
           onChange={(e) => setTextInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !isProcessing) { submitText(textInput); setTextInput(""); } }}
           disabled={isProcessing || isRecording}
-          placeholder="텍스트로 검색 (예: 주차 가능한 이탈리안)"
+          placeholder="Search by text (e.g. Italian with parking)"
           className="flex-1 bg-gray-900/80 backdrop-blur-xl border border-white/[0.08] rounded-full px-4 py-2 text-[12px] text-gray-300 placeholder-gray-600 focus:outline-none focus:border-violet-500/40 transition-colors"
         />
         <button
@@ -237,7 +244,7 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
           <button
             onClick={handleClear}
             className="w-8 h-8 rounded-full bg-gray-800/80 border border-white/[0.06] flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-700/80 transition-all text-xs"
-            title="초기화"
+            title="Reset"
           >
             &#x2715;
           </button>
@@ -260,7 +267,7 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
               : "bg-gray-900/80 backdrop-blur-xl border border-white/[0.08] hover:border-white/[0.15] hover:bg-gray-800/80 active:scale-95"
             }
           `}
-          title={isRecording ? "놓으면 전송" : isProcessing ? "처리 중..." : "누르고 말하기"}
+          title={isRecording ? "Release to send" : isProcessing ? "Processing..." : "Hold to talk"}
         >
           {/* Pulse ring when recording */}
           {isRecording && (
@@ -286,7 +293,7 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
 
       {/* Hint label */}
       <p className="text-[10px] text-gray-600 font-medium">
-        {isRecording ? "말하는 중... 손을 떼면 검색" : isProcessing ? "분석 중..." : "누르고 말하기"}
+        {isRecording ? "Listening... release to search" : isProcessing ? "Analyzing..." : "Hold to talk"}
       </p>
     </div>
   );

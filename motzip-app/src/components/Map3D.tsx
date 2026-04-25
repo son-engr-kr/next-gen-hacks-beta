@@ -7,6 +7,7 @@ import { restaurants as staticRestaurants } from "@/data/restaurants";
 import { Restaurant } from "@/types/restaurant";
 import { createBuildingCustomLayer } from "./BuildingLayer";
 import RestaurantPanel from "./RestaurantPanel";
+import BatchCallPanel from "./BatchCallPanel";
 import Fireworks from "./Fireworks";
 import VoiceSearch from "./VoiceSearch";
 
@@ -311,16 +312,21 @@ export default function Map3D() {
         </div>
       </div>
 
-      {selected && (
+      {voiceResults && voiceResults.length > 0 ? (
+        <BatchCallPanel
+          restaurants={voiceResults}
+          onClose={() => setVoiceResults(null)}
+        />
+      ) : selected ? (
         <RestaurantPanel restaurant={selected} onClose={() => setSelected(null)} />
-      )}
+      ) : null}
 
       {/* Voice filter active badge */}
       {voiceResults !== null && (
         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30">
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-violet-950/80 border border-violet-500/20 text-violet-300 text-[11px] font-semibold backdrop-blur-xl shadow-lg">
             <span className="text-violet-400">&#127908;</span>
-            음성 필터 적용됨 — {voiceResults.length}곳
+            Voice filter active — {voiceResults.length} places
           </div>
         </div>
       )}

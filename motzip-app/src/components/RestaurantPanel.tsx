@@ -95,15 +95,15 @@ export default function RestaurantPanel({ restaurant, onClose }: Props) {
           return;
         }
         if (["failed", "busy", "no-answer", "canceled"].includes(data.status)) {
-          setCallError(`통화 실패: ${data.status}`);
+          setCallError(`Call failed: ${data.status}`);
           setCallPhase("error");
           return;
         }
       }
-      setCallError("응답 시간 초과");
+      setCallError("Response timed out");
       setCallPhase("error");
     } catch (e) {
-      setCallError(e instanceof Error ? e.message : "오류 발생");
+      setCallError(e instanceof Error ? e.message : "Error occurred");
       setCallPhase("error");
     }
   };
@@ -174,13 +174,12 @@ export default function RestaurantPanel({ restaurant, onClose }: Props) {
           {/* Twilio Call section */}
           {restaurant.phone && (
             <div className="pt-1 space-y-2">
-              {/* 커스텀 질문 입력 */}
               <div className="relative">
                 <input
                   type="text"
                   value={customQuestion}
                   onChange={(e) => setCustomQuestion(e.target.value)}
-                  placeholder="궁금한 것 입력 (예: 채식 메뉴 있어요?)"
+                  placeholder="Ask anything (e.g. any vegetarian options?)"
                   disabled={callPhase === "calling"}
                   className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-3 py-2 text-[12px] text-gray-300 placeholder-gray-600 focus:outline-none focus:border-violet-500/40 transition-colors"
                 />
@@ -205,10 +204,10 @@ export default function RestaurantPanel({ restaurant, onClose }: Props) {
                   </svg>
                 )}
                 {callPhase === "idle" && <span>&#128222;</span>}
-                {callPhase === "idle" && " 예약 / 대기시간 전화 문의"}
-                {callPhase === "calling" && " 전화 중..."}
-                {callPhase === "done" && " 통화 완료"}
-                {callPhase === "error" && " 통화 실패"}
+                {callPhase === "idle" && " Call to ask about reservation / wait"}
+                {callPhase === "calling" && " Calling..."}
+                {callPhase === "done" && " Call complete"}
+                {callPhase === "error" && " Call failed"}
               </button>
 
               {callError && (
@@ -220,13 +219,13 @@ export default function RestaurantPanel({ restaurant, onClose }: Props) {
                   <div className="flex items-center gap-2">
                     <span className={`w-2 h-2 rounded-full ${callResult.can_reserve === true ? "bg-emerald-400" : callResult.can_reserve === false ? "bg-rose-400" : "bg-gray-500"}`} />
                     <span className="text-gray-300 font-medium">
-                      {callResult.can_reserve === true ? "예약 가능" : callResult.can_reserve === false ? "예약 불가 (워크인)" : "예약 정보 불명확"}
+                      {callResult.can_reserve === true ? "Reservation available" : callResult.can_reserve === false ? "Walk-in only" : "Reservation status unclear"}
                     </span>
                     {callResult.wait_minutes != null && callResult.wait_minutes > 0 && (
-                      <span className="ml-auto text-amber-300 font-semibold">~{callResult.wait_minutes}분 대기</span>
+                      <span className="ml-auto text-amber-300 font-semibold">~{callResult.wait_minutes} min wait</span>
                     )}
                     {callResult.wait_minutes === 0 && callResult.can_reserve && (
-                      <span className="ml-auto text-emerald-300 font-semibold">대기 없음</span>
+                      <span className="ml-auto text-emerald-300 font-semibold">No wait</span>
                     )}
                   </div>
                   {callResult.notes && (

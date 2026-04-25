@@ -849,6 +849,37 @@ Extract the key info and respond ONLY with a JSON object:
 - notes: any useful details"""
 
 
+def _keyword_parse_gather(speech: str) -> dict:
+    """Heuristic parse when Ollama is unavailable. EN/KO keywords."""
+    import re
+    text = speech.lower()
+
+    # Wait time: pull a number near "minute(s)" or "분"
+    wait = 0
+    m = re.search(r"(\d+)\s*(?:to\s*\d+\s*)?(?:minutes?|min|mins|분)", text)
+    if m:
+        wait = int(m.group(1))
+
+    pos = ["yes", "yeah", "yep", "sure", "of course", "absolutely", "available",
+           "we have", "we can", "open table", "no wait", "right away", "come in",
+           "네", "예", "가능", "있어요", "있습니다", "예약돼", "오세요", "환영"]
+    neg = ["no", "sorry", "can't", "cannot", "fully booked", "full", "no reservations",
+           "walk-in only", "walk in only", "first come", "no availability",
+           "안 돼", "안돼", "불가", "예약 안", "워크인", "꽉 찼"]
+
+    pos_hit = any(w in text for w in pos)
+    neg_hit = any(w in text for w in neg)
+
+    if pos_hit and not neg_hit:
+        can_reserve = True
+    elif neg_hit and not pos_hit:
+        can_reserve = False
+    else:
+        can_reserve = None
+
+    return {"can_reserve": can_reserve, "wait_minutes": wait, "notes": speech}
+
+
 class CallRestaurantRequest(BaseModel):
     restaurant_name: str
     phone: str
@@ -882,32 +913,50 @@ async def call_restaurant(body: CallRestaurantRequest):
     import urllib.parse
     client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-    # LLM으로 유저 질문을 자연스러운 전화 스크립트로 변환
+    # Build a single phone script that combines the standard reservation/wait
+    # question with any extra question the user typed. We always ask about
+    # availability (that's what drives can_reserve / wait_minutes); the custom
+    # question is appended so the restaurant answers both in one breath.
+    # Build the phone script deterministically. Use the LLM ONLY to translate the
+    # caller's extra question into a polite English question — gemma was unreliable
+    # at composing the whole script (wrong perspective, dropping the extra question).
     greeting_script = ""
-    if body.custom_question.strip():
-        try:
-            async with httpx.AsyncClient() as client_http:
-                r = await client_http.post(
-                    f"{OLLAMA_URL}/api/generate",
-                    json={
-                        "model": MODEL,
-                        "prompt": body.custom_question,
-                        "system": (
-                            "Convert the user's casual question into a polite, natural phone call script "
-                            "for calling a restaurant. Write only the script text (1-2 sentences, English). "
-                            "Be concise and friendly. Do not add any explanation."
-                        ),
-                        "stream": False,
-                        "options": {"temperature": 0.3, "num_predict": 150},
-                    },
-                    timeout=15,
-                )
-                r.raise_for_status()
-                greeting_script = r.json()["response"].strip()
-                print(f"[twilio] custom greeting: {greeting_script}")
-        except Exception as e:
-            print(f"[twilio] LLM greeting error: {e}")
-            greeting_script = body.custom_question  # fallback: 그대로 사용
+    raw_extra = body.custom_question.strip()
+    if raw_extra:
+        extra_english = raw_extra
+        # Only invoke the LLM for non-ASCII (e.g. Korean) input — English passes through.
+        needs_translate = any(ord(c) > 127 for c in raw_extra)
+        if needs_translate:
+            try:
+                async with httpx.AsyncClient() as client_http:
+                    r = await client_http.post(
+                        f"{OLLAMA_URL}/api/generate",
+                        json={
+                            "model": MODEL,
+                            "prompt": raw_extra,
+                            "system": (
+                                "Translate the user's question into a polite, natural English "
+                                "question that one would ask a restaurant on the phone. "
+                                "Output ONLY the translated question — one sentence, no quotes, "
+                                "no preamble, no explanation."
+                            ),
+                            "stream": False,
+                            "options": {"temperature": 0.2, "num_predict": 100},
+                        },
+                        timeout=15,
+                    )
+                    r.raise_for_status()
+                    extra_english = r.json()["response"].strip().strip('"“”‘’\'`')
+                    print(f"[twilio] translated extra question: {extra_english}")
+            except Exception as e:
+                print(f"[twilio] translation error: {e}, using original text")
+
+        greeting_script = (
+            f"Hi, I'm calling on behalf of a customer. Could you let me know if a "
+            f"reservation is available for a party of {body.party_size}, {body.time_preference}, "
+            f"or what the current wait time is? Also, {extra_english}"
+        )
+        print(f"[twilio] combined script: {greeting_script}")
 
     twiml_url = (
         f"{NGROK_URL}/api/twilio/voice"
@@ -982,9 +1031,12 @@ async def twilio_gather(
     print(f"[twilio] gather received — CallSid={CallSid}, SpeechResult={repr(raw_speech)}")
     call_info = _call_state.get(CallSid, {})
     call_info["raw_speech"] = raw_speech
-    call_info["status"] = "completed"
+    # Mark as parsing so the frontend keeps polling instead of grabbing a half-built result.
+    # status flips to "completed" only after parsed fields are written below.
+    call_info["status"] = "parsing"
 
-    # Parse the restaurant's response with LLM
+    # Parse the restaurant's response with LLM, fall back to keyword heuristics
+    # if Ollama is unreachable so the demo still produces a useful verdict.
     parsed = {"can_reserve": None, "wait_minutes": 0, "notes": raw_speech}
     if raw_speech:
         try:
@@ -1007,12 +1059,18 @@ async def twilio_gather(
                 if raw.startswith("json"):
                     raw = raw[4:]
             parsed = json.loads(raw)
+            print(f"[twilio] LLM parsed: {parsed}")
         except Exception as e:
-            print(f"[twilio] LLM parse error: {e}")
+            print(f"[twilio] LLM parse failed ({e}), using keyword fallback")
+            parsed = _keyword_parse_gather(raw_speech)
+            print(f"[twilio] keyword parsed: {parsed}")
 
     call_info["can_reserve"] = parsed.get("can_reserve")
     call_info["wait_minutes"] = int(parsed.get("wait_minutes") or 0)
     call_info["notes"] = parsed.get("notes", raw_speech)
+    # Flip to completed only AFTER the parsed fields are populated, so polling
+    # never returns a "completed" status with empty parsed data.
+    call_info["status"] = "completed"
     _call_state[CallSid] = call_info
 
     farewell = "Thank you so much for the information! Have a great day. Goodbye."
