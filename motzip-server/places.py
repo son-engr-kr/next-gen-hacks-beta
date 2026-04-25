@@ -4,13 +4,19 @@ into our internal Restaurant shape."""
 import asyncio
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from catalog import GOOGLE_TYPE_MAP
 from config import GOOGLE_PLACES_API_KEY
+from llm import generate_json
 
 router = APIRouter()
+
+# Cached review texts from the most recent /api/restaurants response, keyed by
+# place_id. Populated by get_restaurants(); read by signature-dish extraction.
+# Memory is bounded by Google's per-call result count, not by demo length.
+_review_cache: dict[str, list[str]] = {}
 
 
 class PlaceRestaurant(BaseModel):
@@ -121,6 +127,14 @@ def _parking_type(parking_opts: dict) -> str | None:
     return None
 
 
+def _extract_review_texts(p: dict) -> list[str]:
+    return [
+        r["text"]["text"]
+        for r in (p.get("reviews") or [])
+        if r.get("text") and r["text"].get("text")
+    ]
+
+
 def _normalize_place(p: dict, default_lat: float, default_lng: float, avg_review_count: float) -> PlaceRestaurant:
     location = p.get("location", {})
     rating = float(p.get("rating", 3.0))
@@ -130,10 +144,8 @@ def _normalize_place(p: dict, default_lat: float, default_lng: float, avg_review
     editorial = p.get("editorialSummary") or {}
     description = editorial.get("text", "")
 
-    reviews = p.get("reviews") or []
-    top_review = ""
-    if reviews and reviews[0].get("text"):
-        top_review = reviews[0]["text"].get("text", "")
+    review_texts = _extract_review_texts(p)
+    top_review = review_texts[0] if review_texts else ""
 
     accessibility = p.get("accessibilityOptions") or {}
     is_wheelchair = bool(
@@ -192,6 +204,14 @@ async def get_restaurants(
                 places.append(p)
 
     avg_count = sum(p.get("userRatingCount", 0) for p in places) / max(len(places), 1)
+
+    # Cache the raw review texts for later signature-dish extraction. Stash
+    # before normalization so we don't re-walk the response in the endpoint.
+    for p in places:
+        pid = p.get("id")
+        if pid:
+            _review_cache[pid] = _extract_review_texts(p)
+
     return [_normalize_place(p, lat, lng, avg_count) for p in places]
 
 
@@ -202,3 +222,56 @@ async def restaurants_endpoint(
     radius: float = 3000,
 ):
     return await get_restaurants(lat=lat, lng=lng, radius=radius)
+
+
+# ── Signature dishes (lazy LLM extraction over cached reviews) ───────────────
+
+class SignatureDishesResponse(BaseModel):
+    dishes: list[str] = []
+
+
+_SIGNATURE_PROMPT = (
+    "From the restaurant reviews below, extract the 3-5 specific FOOD or "
+    "DRINK menu items that reviewers mention positively most often or with "
+    "the strongest praise. Use the exact dish names as written, lowercase.\n\n"
+    "Strict rules:\n"
+    "- Only items you would order from a menu (e.g. 'cannoli', 'fish and chips', "
+    "'spicy tuna roll', 'iced latte').\n"
+    "- NEVER include non-food items (devices, decor, ambiance, service, staff names).\n"
+    "- NEVER include generic words like 'food', 'meal', 'menu', 'lunch', 'dinner'.\n"
+    "- If no specific dishes are clearly named, return an empty list.\n\n"
+    "Respond ONLY with a JSON object — no markdown, no preamble:\n"
+    "{ \"dishes\": [\"dish 1\", \"dish 2\", ...] }"
+)
+
+# Per-place result cache so re-expanding the same card is instant + free.
+_signature_cache: dict[str, list[str]] = {}
+
+
+@router.get("/api/signature-dishes/{place_id}", response_model=SignatureDishesResponse)
+async def signature_dishes(place_id: str):
+    if place_id in _signature_cache:
+        return SignatureDishesResponse(dishes=_signature_cache[place_id])
+
+    reviews = _review_cache.get(place_id)
+    if not reviews:
+        # Either the place isn't in our cache (frontend out of sync) or the
+        # place has zero reviews. Either way, nothing to extract.
+        return SignatureDishesResponse(dishes=[])
+
+    # Cap input length so the LLM call stays fast even with long reviews.
+    joined = "\n\n".join(f"Review {i+1}: {r}" for i, r in enumerate(reviews[:5]))[:4000]
+
+    try:
+        parsed = await generate_json(
+            joined, _SIGNATURE_PROMPT,
+            temperature=0.1, num_predict=200, timeout=20,
+        )
+        dishes = [str(d).strip() for d in (parsed.get("dishes") or []) if str(d).strip()]
+        dishes = dishes[:5]
+    except Exception as e:
+        print(f"[places] signature-dish LLM failed for {place_id}: {e}")
+        raise HTTPException(status_code=503, detail="LLM unavailable")
+
+    _signature_cache[place_id] = dishes
+    return SignatureDishesResponse(dishes=dishes)

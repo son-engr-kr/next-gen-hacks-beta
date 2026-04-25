@@ -52,3 +52,12 @@ export async function fetchCallResult(call_sid: string): Promise<CallResult | nu
 }
 
 export const TERMINAL_FAILURES = ["failed", "busy", "no-answer", "canceled"];
+
+// ── Signature dish extraction ───────────────────────────────────────────────
+
+export async function fetchSignatureDishes(placeId: string): Promise<string[]> {
+  const res = await fetch(`${SERVER_URL}/api/signature-dishes/${placeId}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return Array.isArray(data?.dishes) ? data.dishes : [];
+}
