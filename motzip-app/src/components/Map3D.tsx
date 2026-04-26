@@ -474,7 +474,11 @@ export default function Map3D() {
           onClose={() => setVoiceResults(null)}
         />
       ) : selected ? (
-        <RestaurantPanel restaurant={selected} onClose={() => setSelected(null)} />
+        <RestaurantPanel
+          key={selected.id}
+          restaurant={selected}
+          onClose={() => setSelected(null)}
+        />
       ) : null}
 
       {/* Voice filter active badge */}
