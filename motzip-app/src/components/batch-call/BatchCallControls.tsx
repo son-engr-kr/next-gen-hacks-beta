@@ -39,8 +39,9 @@ export default function BatchCallControls({
   batchRunning,
   onRunBatch,
 }: Props) {
-  const hasNoQuestion = askedKeys.size === 0 && !globalQuestion.trim();
-  const callDisabled = selectedCount === 0 || batchRunning || hasNoQuestion;
+  // No question picked? We default to the reservation question at call time
+  // (handled in BatchCallPanel.runOneCall), so the button stays enabled.
+  const callDisabled = selectedCount === 0 || batchRunning;
 
   return (
     <div className="px-5 pb-3 space-y-2.5 border-b border-white/[0.04]">
@@ -100,7 +101,6 @@ export default function BatchCallControls({
         <button
           onClick={onRunBatch}
           disabled={callDisabled}
-          title={hasNoQuestion ? "Pick at least one question or write a custom one" : ""}
           className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-[12px] font-semibold transition-all bg-violet-900/50 border border-violet-500/20 text-violet-300 hover:bg-violet-800/50 hover:text-violet-200 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {batchRunning ? (

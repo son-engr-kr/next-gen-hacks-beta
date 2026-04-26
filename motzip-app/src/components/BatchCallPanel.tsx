@@ -99,11 +99,19 @@ export default function BatchCallPanel({
     setCallingPhase(restaurant.id);
 
     try {
+      // If the user didn't pick a question or write one, default to asking
+      // about reservation/wait — the most common single thing people call to
+      // find out — so the agent always has something concrete to ask.
+      const customQ = globalQuestion.trim();
+      const questions = askedKeys.size === 0 && !customQ
+        ? ["reservation"]
+        : Array.from(askedKeys);
+
       const { call_sid } = await initiateCall({
         restaurant_name: restaurant.name,
         phone: restaurant.phone,
-        questions: Array.from(askedKeys),
-        custom_question: globalQuestion.trim(),
+        questions,
+        custom_question: customQ,
       });
 
       const deadline = Date.now() + POLL_DEADLINE_MS;
