@@ -1,0 +1,27 @@
+# Don't ship local venvs or caches into the image.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.so
+
+# Don't ship secrets — env vars come from Cloud Run config instead.
+.env
+.env.*
+!.env.example
+
+# Local dev junk
+.git/
+.gitignore
+.pytest_cache/
+.coverage
+.DS_Store
+*.log
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+
+# Docs (already in the parent repo, not needed at runtime)
+README.md
