@@ -85,8 +85,8 @@ gatekeeper to eating out.
 > "Watch this."
 
 > *(Voice into the mic, naturally:)*
-> "Find me a quiet, romantic spot for date night. Korean food, under
-> forty dollars, with cocktails."
+> "Find me a wheelchair accessible Korean restaurant with parking,
+> under forty dollars per person."
 
 > *(Release. Buildings without those features sink into the ground and
 > vanish; matching ones get a glowing spotlight beam. Result cards slide
@@ -94,8 +94,8 @@ gatekeeper to eating out.
 > your filters. Top picks: …")*
 
 > "I didn't pick from a dropdown. I just said it. Gemini extracted the
-> filters — cuisine, price, vibe, cocktails — and only the buildings that
-> match are still standing."
+> filters — cuisine, price, wheelchair access, parking — and only the
+> buildings that match are still standing."
 
 ### 1:10 – 1:30 · Cards, map sync, signature dishes
 
@@ -118,7 +118,7 @@ gatekeeper to eating out.
 > "Now the part that didn't exist before MotZip. I pick the questions I
 > actually want answered."
 
-> *(Click checkboxes: Reservation. Wheelchair. Vegetarian.)*
+> *(Click checkboxes: Reservation. Vegetarian.)*
 
 > "And if I have something specific that's not on the list —"
 
@@ -135,8 +135,6 @@ gatekeeper to eating out.
 >     or what's the current wait time?"
 >   - *(You answer as the restaurant: "Yeah, we can seat you in about 15
 >     minutes.")*
->   - "Got it. Next — is the restaurant wheelchair accessible?"
->   - *("Yes, fully accessible.")*
 >   - "Got it. Next — do you offer vegetarian options?"
 >   - *("Just one or two vegetarian dishes.")*
 >   - "Got it. And finally — do you have a high chair available?"
@@ -144,8 +142,8 @@ gatekeeper to eating out.
 >   - "Thank you so much. Have a great day."
 
 > *(Cut back to the panel. Each card fills in live as answers arrive:
-> ✓ Reservation ~15 min wait, ✓ Wheelchair access, ✗ Vegetarian "only
-> 1–2 dishes", ✓ High chair "yes, available".)*
+> ✓ Reservation ~15 min wait, ✗ Vegetarian "only 1–2 dishes",
+> ✓ High chair "yes, available".)*
 
 > "One question at a time, parsed into a structured checklist. Across
 > three restaurants, I'd just done what would take me twenty minutes on
