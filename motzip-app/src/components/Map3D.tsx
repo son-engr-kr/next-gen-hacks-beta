@@ -269,6 +269,27 @@ export default function Map3D() {
         } catch {}
       }
 
+      // Sky — visible at high pitch (low-angle horizon views)
+      try {
+        // Newer MapLibre supports map.setSky directly
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const m = map as any;
+        if (typeof m.setSky === "function") {
+          m.setSky({
+            "sky-color":         "#7fb8e8",  // mid blue overhead
+            "sky-horizon-blend": 0.55,
+            "horizon-color":     "#d8e8f4",  // pale haze near horizon
+            "horizon-fog-blend": 0.4,
+            "fog-color":         "#bcd6ea",
+            "fog-ground-blend":  0.6,
+          });
+        } else {
+          // Fallback: add a sky layer
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          map.addLayer({ id: "sky", type: "sky", paint: { "sky-color": "#7fb8e8" } } as any);
+        }
+      } catch {}
+
       // Three.js custom layer for 3D buildings with textures
       const { layer: buildingLayer, setFilter, setHovered, setSelected: setSelectedHl } = createBuildingCustomLayer(map, restaurants);
       setFilterRef.current = setFilter;
@@ -418,22 +439,31 @@ export default function Map3D() {
 
         {/* Legend */}
         <div className="bg-gray-950/70 backdrop-blur-xl rounded-2xl p-3 border border-white/[0.06] text-[10px] text-gray-400 space-y-1.5 shadow-xl shadow-black/30">
-          <p className="text-[9px] uppercase tracking-widest text-gray-600 font-bold pb-0.5">Building</p>
+          <p className="text-[9px] uppercase tracking-widest text-gray-600 font-bold pb-0.5">Beam</p>
           <div className="flex items-center gap-2">
             <div className="w-2 h-5 rounded-sm bg-gradient-to-t from-amber-700 to-amber-300" />
-            <span>Height = Reviews</span>
+            <span>Height = Rating</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-gradient-to-br from-amber-300 to-amber-500" />
-            <span>Gold = Top Rated</span>
+            <div className="w-3 h-3 rounded-full bg-amber-500" />
+            <span>Gold ≥ ★4.5</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-gradient-to-br from-rose-400 to-red-600" />
-            <span>Red = Lower Rated</span>
+            <div className="w-3 h-3 rounded-full bg-slate-400" />
+            <span>Silver ≥ ★4.2</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-gray-700/60 border border-gray-500/40" />
-            <span>Dim = Currently Closed</span>
+            <div className="w-3 h-3 rounded-full bg-orange-800" />
+            <span>Bronze &lt; ★4.2</span>
+          </div>
+          <p className="text-[9px] uppercase tracking-widest text-gray-600 font-bold pt-1.5 pb-0.5">Crowd</p>
+          <div className="flex items-center gap-2">
+            <div className="flex gap-[2px]">
+              <div className="w-1 h-3 rounded-sm bg-gray-400" />
+              <div className="w-1 h-3 rounded-sm bg-gray-400" />
+              <div className="w-1 h-3 rounded-sm bg-gray-400" />
+            </div>
+            <span>Queue = Popularity</span>
           </div>
           <div className="flex items-center justify-between pt-0.5 pb-0.5">
             <p className="text-[9px] uppercase tracking-widest text-gray-600 font-bold">Filter by feature</p>

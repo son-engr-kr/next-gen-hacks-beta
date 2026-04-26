@@ -30,6 +30,9 @@ const BOSTON_NEIGHBORHOODS: { name: string; lat: number; lng: number; radius: nu
   { name: "Davis Square", lat: 42.3969, lng: -71.1225, radius: 0.002 },
   { name: "Inman Square", lat: 42.3739, lng: -71.0992, radius: 0.002 },
   { name: "South Boston", lat: 42.3380, lng: -71.0480, radius: 0.004 },
+  // Logan Airport — terminals + hotel cluster, planes visible above
+  { name: "Logan Airport", lat: 42.3656, lng: -71.0096, radius: 0.005 },
+  { name: "Logan Hotels",  lat: 42.3710, lng: -71.0220, radius: 0.003 },
 ];
 
 const RESTAURANT_TEMPLATES: { names: string[]; category: Category }[] = [
@@ -105,4 +108,24 @@ function generateRestaurants(): Restaurant[] {
   return generated;
 }
 
-export const restaurants: Restaurant[] = [...FAMOUS_RESTAURANTS, ...generateRestaurants()];
+// Demo enrichment — distribute feature flags deterministically so the icon
+// row, voice filters, and feature-search all have something to show.
+function enrichWithDemoFeatures(rs: Restaurant[]): Restaurant[] {
+  return rs.map((r, i) => {
+    const parking: "free" | "paid" | "valet" | undefined =
+      (i % 7) === 0 ? "valet" :
+      (i % 5) === 0 ? "paid"  :
+      (i % 4) === 0 ? "free"  :
+      undefined;
+    return {
+      ...r,
+      isWheelchairAccessible: r.isWheelchairAccessible ?? ((i % 3) === 0),
+      parkingType:            r.parkingType            ?? parking,
+      hasLiveMusic:           r.hasLiveMusic           ?? ((i % 9)  === 0),
+      allowsDogs:             r.allowsDogs             ?? ((i % 6)  === 0),
+      servesCocktails:        r.servesCocktails        ?? ((i % 4)  === 0),
+    };
+  });
+}
+
+export const restaurants: Restaurant[] = enrichWithDemoFeatures([...FAMOUS_RESTAURANTS, ...generateRestaurants()]);
