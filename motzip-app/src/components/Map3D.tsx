@@ -32,16 +32,14 @@ const ICON_FILTER_DEFS: { key: IconFilterKey; label: string; match: (r: Restaura
 function buildGeoJSON(restaurants: Restaurant[]) {
   return {
     type: "FeatureCollection" as const,
+    // Every restaurant renders as a floating food icon — uniform hit area sized
+    // to comfortably cover the bobbing icon at its float altitude.
     features: restaurants.map((r) => ({
       type: "Feature" as const,
-      properties: {
-        id: r.id,
-        name: r.name,
-        height: Math.max(30, r.reviewCount * 0.6),
-      },
+      properties: { id: r.id, name: r.name, height: 220 },
       geometry: {
         type: "Polygon" as const,
-        coordinates: [buildSquare(r.lng, r.lat, 0.00022)],
+        coordinates: [buildSquare(r.lng, r.lat, 0.00035)],
       },
     })),
   };
@@ -64,6 +62,8 @@ export default function Map3D() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const setFilterRef = useRef<((ids: Set<string> | null) => void) | null>(null);
+  const setHoveredRef = useRef<((id: string | null) => void) | null>(null);
+  const setSelectedHlRef = useRef<((id: string | null) => void) | null>(null);
   const [selected, setSelected] = useState<Restaurant | null>(null);
   const [mapInstance, setMapInstance] = useState<maplibregl.Map | null>(null);
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
@@ -161,6 +161,11 @@ export default function Map3D() {
     setFilterRef.current(ids);
   }, [voiceResults, iconFilters, restaurants]);
 
+  // Sync selected restaurant → 3D highlight glow
+  useEffect(() => {
+    setSelectedHlRef.current?.(selected?.id ?? null);
+  }, [selected]);
+
   const toggleIconFilter = (k: IconFilterKey) => {
     setIconFilters((prev) => {
       const next = new Set(prev);
@@ -190,7 +195,7 @@ export default function Map3D() {
       zoom: 14.5,
       pitch: 50,
       bearing: 0,
-      maxPitch: 60,
+      maxPitch: 82,
       minZoom: 12,
     } as maplibregl.MapOptions);
 
@@ -204,15 +209,17 @@ export default function Map3D() {
     map.on("load", () => {
       // ── "Pastel Sunset" theme — storybook palette, all colors lifted toward cream ──
       // Terrain: very soft pastels with warm undertone — parks now properly green
+      // Pastel palette — soft cream base with light pastel accents so the
+      // dark beams + saturated food models stand out clearly.
       const muteFills: Record<string, string> = {
         background:           "#fbf2dd",  // pastel cream
-        park:                 "#9ed6a0",  // vivid pastel green
-        landcover_grass:      "#b8e0b6",  // lighter green
-        landcover_wood:       "#7ec98a",  // deeper forest pastel
-        water:                "#c4dbd8",  // pastel mint
-        landuse_residential:  "#f3e7d0",  // soft peach-cream
+        landuse_residential:  "#f3e7d0",
         landuse_commercial:   "#f3e6cf",
         building:             "#ecd8be",  // pastel beige
+        park:                 "#9ed6a0",  // vivid pastel green
+        landcover_grass:      "#b8e0b6",
+        landcover_wood:       "#7ec98a",
+        water:                "#c4dbd8",  // pastel mint
       };
       for (const [id, color] of Object.entries(muteFills)) {
         const lyr = map.getLayer(id);
@@ -224,20 +231,20 @@ export default function Map3D() {
         } catch {}
       }
 
-      // Roads/features: pastel rainbow within the sunset family
+      // Roads/transit: barely-distinguishable from background — subtle grid only.
       const vividLines: Record<string, string> = {
-        highway_motorway_inner:    "#f08a7a",  // pastel peach-coral
-        highway_motorway_casing:   "#cf7068",  // dusty coral
-        highway_motorway_subtle:   "#fab9a8",  // very soft coral
-        highway_major_inner:       "#f8c878",  // butter amber
-        highway_major_casing:      "#cd9658",  // toasted amber
-        highway_major_subtle:      "#fde2ad",  // soft butter
-        highway_minor:             "#eea4b8",  // soft pink
-        highway_path:              "#daa088",  // soft terracotta
-        railway:                   "#84c8c2",  // pastel teal
-        railway_transit:           "#c5a0c5",  // lavender
-        railway_service:           "#a8d8d2",  // light pastel teal
-        waterway:                  "#84c8c2",  // matches railway pastel teal
+        highway_motorway_inner:    "#dccfb6",
+        highway_motorway_casing:   "#c8b89d",
+        highway_motorway_subtle:   "#e3d8c0",
+        highway_major_inner:       "#d8ccb4",
+        highway_major_casing:      "#c2b194",
+        highway_major_subtle:      "#dccfb6",
+        highway_minor:             "#d2c5ad",
+        highway_path:              "#c8baa0",
+        railway:                   "#cebea4",
+        railway_transit:           "#cebea4",
+        railway_service:           "#c2b292",
+        waterway:                  "#a5c4c0",
       };
       for (const [id, color] of Object.entries(vividLines)) {
         if (!map.getLayer(id)) continue;
@@ -246,9 +253,48 @@ export default function Map3D() {
         } catch {}
       }
 
+      // Catch-all: dim every remaining road/rail/transit/bridge/tunnel/aeroway
+      // line so subways and major roads we didn't explicitly name don't pop.
+      const ROAD_DIM_PATTERNS = /highway|road|rail|transit|subway|bridge|tunnel|street|track|service|aeroway|ferry|path|cycleway|pedestrian/i;
+      const ROAD_DIM_COLOR = "#d8cdb8";  // soft warm grey, blends with cream
+      for (const layer of (map.getStyle().layers || [])) {
+        if (!ROAD_DIM_PATTERNS.test(layer.id)) continue;
+        if (layer.id.includes("name") || layer.id.includes("label")) continue; // skip text
+        try {
+          if (layer.type === "line") {
+            map.setPaintProperty(layer.id, "line-color", ROAD_DIM_COLOR);
+          } else if (layer.type === "fill") {
+            map.setPaintProperty(layer.id, "fill-color", ROAD_DIM_COLOR);
+          }
+        } catch {}
+      }
+
+      // Sky — visible at high pitch (low-angle horizon views)
+      try {
+        // Newer MapLibre supports map.setSky directly
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const m = map as any;
+        if (typeof m.setSky === "function") {
+          m.setSky({
+            "sky-color":         "#7fb8e8",  // mid blue overhead
+            "sky-horizon-blend": 0.55,
+            "horizon-color":     "#d8e8f4",  // pale haze near horizon
+            "horizon-fog-blend": 0.4,
+            "fog-color":         "#bcd6ea",
+            "fog-ground-blend":  0.6,
+          });
+        } else {
+          // Fallback: add a sky layer
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          map.addLayer({ id: "sky", type: "sky", paint: { "sky-color": "#7fb8e8" } } as any);
+        }
+      } catch {}
+
       // Three.js custom layer for 3D buildings with textures
-      const { layer: buildingLayer, setFilter } = createBuildingCustomLayer(map, restaurants);
+      const { layer: buildingLayer, setFilter, setHovered, setSelected: setSelectedHl } = createBuildingCustomLayer(map, restaurants);
       setFilterRef.current = setFilter;
+      setHoveredRef.current = setHovered;
+      setSelectedHlRef.current = setSelectedHl;
       map.addLayer(buildingLayer);
 
       // Invisible fill-extrusion for click hit-testing
@@ -290,11 +336,14 @@ export default function Map3D() {
         map.flyTo({ center: [r.lng, r.lat], zoom: 16, pitch: 55, duration: 800 });
       });
 
-      map.on("mouseenter", "restaurant-hit", () => {
+      map.on("mousemove", "restaurant-hit", (e) => {
         map.getCanvas().style.cursor = "pointer";
+        const id = e.features?.[0]?.properties?.id as string | undefined;
+        setHoveredRef.current?.(id ?? null);
       });
       map.on("mouseleave", "restaurant-hit", () => {
         map.getCanvas().style.cursor = "";
+        setHoveredRef.current?.(null);
       });
 
     });
@@ -390,22 +439,31 @@ export default function Map3D() {
 
         {/* Legend */}
         <div className="bg-gray-950/70 backdrop-blur-xl rounded-2xl p-3 border border-white/[0.06] text-[10px] text-gray-400 space-y-1.5 shadow-xl shadow-black/30">
-          <p className="text-[9px] uppercase tracking-widest text-gray-600 font-bold pb-0.5">Building</p>
+          <p className="text-[9px] uppercase tracking-widest text-gray-600 font-bold pb-0.5">Beam</p>
           <div className="flex items-center gap-2">
             <div className="w-2 h-5 rounded-sm bg-gradient-to-t from-amber-700 to-amber-300" />
-            <span>Height = Reviews</span>
+            <span>Height = Rating</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-gradient-to-br from-amber-300 to-amber-500" />
-            <span>Gold = Top Rated</span>
+            <div className="w-3 h-3 rounded-full bg-amber-500" />
+            <span>Gold ≥ ★4.5</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-gradient-to-br from-rose-400 to-red-600" />
-            <span>Red = Lower Rated</span>
+            <div className="w-3 h-3 rounded-full bg-slate-400" />
+            <span>Silver ≥ ★4.2</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-gray-700/60 border border-gray-500/40" />
-            <span>Dim = Currently Closed</span>
+            <div className="w-3 h-3 rounded-full bg-orange-800" />
+            <span>Bronze &lt; ★4.2</span>
+          </div>
+          <p className="text-[9px] uppercase tracking-widest text-gray-600 font-bold pt-1.5 pb-0.5">Crowd</p>
+          <div className="flex items-center gap-2">
+            <div className="flex gap-[2px]">
+              <div className="w-1 h-3 rounded-sm bg-gray-400" />
+              <div className="w-1 h-3 rounded-sm bg-gray-400" />
+              <div className="w-1 h-3 rounded-sm bg-gray-400" />
+            </div>
+            <span>Queue = Popularity</span>
           </div>
           <div className="flex items-center justify-between pt-0.5 pb-0.5">
             <p className="text-[9px] uppercase tracking-widest text-gray-600 font-bold">Filter by feature</p>

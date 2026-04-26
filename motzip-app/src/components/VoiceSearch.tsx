@@ -237,13 +237,13 @@ export default function VoiceSearch({ userLat, userLng, onResults, onClear }: Pr
         </button>
       </div>
 
-      {/* Controls row */}
-      <div className="flex items-center gap-3">
-        {/* Clear button — shown when there are results */}
+      {/* Controls row — mic is the only flow child so it stays centered.
+          Clear button (when shown) hangs off to the left absolutely. */}
+      <div className="relative">
         {(phase === "done" || phase === "error") && (
           <button
             onClick={handleClear}
-            className="w-8 h-8 rounded-full bg-gray-800/80 border border-white/[0.06] flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-700/80 transition-all text-xs"
+            className="absolute right-full top-1/2 -translate-y-1/2 mr-3 w-8 h-8 rounded-full bg-gray-800/80 border border-white/[0.06] flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-700/80 transition-all text-xs"
             title="Reset"
           >
             &#x2715;
