@@ -1,158 +1,260 @@
-# motzip
+<div align="center">
 
-Boston restaurant 3D map — Google Places API 기반 실시간 데이터, ElevenLabs 음성 검색, Twilio 전화 예약.
+### 🏗️ Next-Gen Hacks Beta · Spring 2026 — submission complete · judging in progress
 
-## Structure
+# 🍴 MotZip
 
-| Directory | Description |
-|---|---|
-| `motzip-app/` | Next.js frontend — 3D map (MapLibre + Three.js), 음성 검색 UI, 레스토랑 패널, Twilio 예약 버튼 |
-| `motzip-server/` | FastAPI — Google Places API, ElevenLabs STT/TTS, Ollama LLM, Twilio 전화 |
-| `motzip-3d/` | 3D 모델 생성 파이프라인 (TRELLIS text-to-3D + mesh 최적화) |
+**Restaurants, by voice. The phone call is the new search bar.**
 
----
+Speak what you actually want, watch a 3D map filter to your candidates,
+then have an AI agent call every restaurant in parallel and return ✓/✗/?
+answers — reservations, accessibility, parking, allergens — in any language.
 
-## 환경변수 설정 (.env)
+[![Submission status](https://img.shields.io/badge/🏗️_Next--Gen_Hacks_Beta-judging_in_progress-FFD166?style=for-the-badge)](#hackathon-context)
+[![Watch demo](https://img.shields.io/badge/▶_Watch_demo-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=y0-sebdw99I)
+[![Live app](https://img.shields.io/badge/🌐_Live-motzip.vercel.app-B5E48C?style=for-the-badge)](https://motzip.vercel.app)
 
-`motzip-server/.env` 파일을 아래 내용으로 생성. **키 값은 팀원에게 별도로 전달받을 것.**
+**Next-Gen Hacks Beta · Spring 2026** · Voice + 3D + Real-time Communication tracks
 
-```env
-# Google Places API (GCP 프로젝트: theta-bliss-486220-s1)
-GOOGLE_PLACES_API_KEY=
+<a href="https://www.youtube.com/watch?v=y0-sebdw99I">
+  <img src="docs/assets/motzip_thumbnail.jpg" alt="MotZip — watch the demo on YouTube" width="720" />
+</a>
 
-# ElevenLabs — STT(Scribe) + TTS
-ELEVENLABS_API_KEY=
-ELEVENLABS_VOICE_ID=EXAVITQu4vr4xnSDxMaL   # Sarah (기본값, 변경 가능)
-
-# Twilio — 레스토랑 전화 예약
-TWILIO_ACCOUNT_SID=
-TWILIO_AUTH_TOKEN=
-TWILIO_PHONE_NUMBER=+18447589915
-
-# ngrok — Twilio webhook용 공개 URL (로컬 개발 시 필요)
-NGROK_URL=https://xxxx.ngrok-free.app
-
-# 테스트용 수신 번호 오버라이드 (Twilio Trial 계정 한정)
-# Trial 계정은 Verified Caller ID로 등록된 번호로만 전화 가능
-# 실제 레스토랑에 전화할 경우 이 줄을 삭제하거나 비워둘 것
-TWILIO_TEST_TO=
-```
+</div>
 
 ---
 
-## Install
+## Table of contents
 
-### Frontend (motzip-app)
+- [What MotZip does](#what-motzip-does)
+- [Autocall in action](#autocall-in-action)
+- [Live surfaces](#live-surfaces)
+- [Architecture](#architecture)
+- [Core flows](#core-flows)
+- [Hackathon context](#hackathon-context)
+- [Credits](#credits)
+- [For developers](#for-developers)
 
-Node.js 20+ 필요.
+---
 
-```bash
-cd motzip-app
-npm install
+## What MotZip does
+
+<p align="center">
+  <img src="docs/assets/main_page.png" alt="MotZip 3D map with floating restaurant icons" width="900" />
+</p>
+
+A two-step experience, both backed by a real FastAPI backend on Cloud Run:
+
+| # | Surface | What happens | Data source |
+|---|---------|--------------|-------------|
+| 1 | **3D map** | Restaurants render as TRELLIS-generated GLB icons floating over MapLibre + Three.js. Beam height = rating tier (gold/silver/bronze). Crowd queue = popularity. | **Google Places API (New)** — `searchNearby` ×7 cuisine groups (39 → 98 restaurants in the demo region) |
+| 2 | **Voice search** | Hold the mic, speak in English or Korean: *"quiet date spot, korean food, under $40, with cocktails."* Non-matching food sinks into the ground; matches stay lit. A friendly voice speaks the count and top picks back. | **Google Cloud STT** + **Gemini 2.0 Flash** (filter extraction) + **Google Cloud TTS** |
+| 3 | **Restaurant panel** | Click any food icon → details, photos, hours. On demand, extract **signature dishes** from real Google reviews with one LLM call. | **Google Places** + **Gemini** |
+| 4 | **Batch phone calls** | Pick the questions you actually care about (reservations, vegetarian, wheelchair access, outdoor seating, parking, dogs, live music) plus a free-form question in any language. Click "Call N selected." Each restaurant is dialed in parallel. | **Twilio Voice** chained `<Gather>` per question |
+| 5 | **Per-question parsing** | The agent asks **one question at a time**, transcribes each answer, and parses each turn independently with Gemini. Results stream back as a ✓/✗/? checklist per restaurant. | **Twilio** + **Google Cloud STT** + **Gemini** |
+| 6 | **Graceful degradation** | Gemini JSON parse fail → keyword heuristics. Google STT/TTS → ElevenLabs Scribe + Turbo v2.5. Nothing is a single point of failure. | wired throughout |
+
+> **Bilingual from day one** — every surface (search, TTS reply, call agent, custom question) works in English and Korean. Adding a third language is a Gemini prompt change.
+
+---
+
+## Autocall in action
+
+The most distinctive piece: pick the questions, click "Call N selected,"
+and watch a real Twilio call thread build up live — one question at a time,
+each answer transcribed and parsed independently.
+
+<table>
+<tr>
+<td align="center" width="33%">
+  <img src="docs/assets/auto-call.png" alt="Autocall — pick questions and dial" />
+  <br/>
+  <sub><b>1. Pick questions, dial N restaurants in parallel</b></sub>
+</td>
+<td align="center" width="33%">
+  <img src="docs/assets/auto-call-real.png" alt="Autocall — real Twilio call running" />
+  <br/>
+  <sub><b>2. Each call runs a chained <code>&lt;Gather&gt;</code> per question</b></sub>
+</td>
+<td align="center" width="33%">
+  <img src="docs/assets/auto-call-transcript.png" alt="Autocall — per-turn transcript and verdict" />
+  <br/>
+  <sub><b>3. Per-turn STT + Gemini parse → ✓/✗/? + raw answer</b></sub>
+</td>
+</tr>
+</table>
+
+---
+
+## Live surfaces
+
+| Surface | URL |
+|---------|-----|
+| 🎥 **Demo video** | https://www.youtube.com/watch?v=y0-sebdw99I |
+| 🌐 **Frontend** | https://motzip.vercel.app |
+| 🎬 Demo storyboard | [`docs/STORYBOARD.md`](./docs/STORYBOARD.md) |
+| 🎤 Presentation outline | [`docs/PRESENTATION.md`](./docs/PRESENTATION.md) |
+| 🔧 Backend (Cloud Run) | `https://motzip-api-*.us-central1.run.app` (deploy-managed) |
+| 🪝 Twilio webhook | `{api}/api/twilio/voice-reply` |
+
+---
+
+## Architecture
+
 ```
-
-### Server (motzip-server)
-
-Python 3.11+ 및 [uv](https://docs.astral.sh/uv/) 필요.
-
-```bash
-cd motzip-server
-uv sync
-```
-
-### Ollama (LLM — 음성 필터 추출용)
-
-Ollama 없어도 Google Places + ElevenLabs는 동작함. 음성 쿼리 필터링 정확도 향상을 위해 설치 권장.
-
-```bash
-# 설치: https://ollama.com
-ollama pull gemma3:4b
-ollama serve
+┌──────────────────────────────────────────────────────────────────────┐
+│                          motzip.vercel.app                           │
+│                            (Vercel CDN)                              │
+│       ┌──────────────────────────────────────────────────┐           │
+│       │ Next.js 16 (Turbopack) · React 19 · Tailwind 4    │          │
+│       │  · MapLibre GL · Three.js + DRACOLoader           │          │
+│       │                                                    │         │
+│       │  • Map3D            — 3D scene + voice mic        │          │
+│       │  • BuildingLayer    — custom MapLibre GL layer    │          │
+│       │  • VoiceSearch      — push-to-talk + text input   │          │
+│       │  • RestaurantPanel  — details + per-call status   │          │
+│       │  • BatchCallPanel   — pick N, call N in parallel  │          │
+│       │  • Fireworks        — trending-spot canvas FX     │          │
+│       └──────────────────────────────────────────────────┘           │
+└─────────────────────────────────┬────────────────────────────────────┘
+                                  │ HTTPS  (NEXT_PUBLIC_SERVER_URL)
+                                  ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                  motzip-api  (Cloud Run · us-central1)               │
+│                  FastAPI · Python 3.11 · APIRouter modules           │
+│                                                                      │
+│   ┌─────────────┬───────────────┬───────────────┬──────────────┐     │
+│   │ /api/       │ /api/voice-   │ /api/call-    │ /api/        │     │
+│   │ restaurants │ search        │ restaurant    │ analyze-     │     │
+│   │             │               │ /api/call-    │ reviews      │     │
+│   │             │               │ result/{sid}  │              │     │
+│   └──────┬──────┴───────┬───────┴───────┬───────┴──────┬───────┘     │
+│          │              │               │              │             │
+└──────────┼──────────────┼───────────────┼──────────────┼─────────────┘
+           ▼              ▼               ▼              ▼
+   ┌──────────────┐ ┌──────────────┐ ┌─────────┐ ┌──────────────────┐
+   │ Google       │ │ Gemini 2.0   │ │ Twilio  │ │ Google Cloud     │
+   │ Places API   │ │ Flash API    │ │ Voice   │ │ Speech-to-Text   │
+   │ (New)        │ │ • filter     │ │ chained │ │   + Text-to-     │
+   │  searchNea-  │ │   extraction │ │ <Gather>│ │   Speech         │
+   │  rby ×7      │ │ • call answer│ │ per-Q   │ │  (en + ko)       │
+   │  cuisine     │ │   parsing    │ │         │ ├──────────────────┤
+   │  groups      │ │ • signature  │ │         │ │ ElevenLabs       │
+   │  → dedupe by │ │   dishes     │ │         │ │ Scribe + Turbo   │
+   │  place_id    │ │              │ │         │ │ v2.5             │
+   │              │ │ response_    │ │         │ │ (auto-fallback   │
+   │              │ │ mime_type =  │ │         │ │  for local dev)  │
+   │              │ │ json         │ │         │ └──────────────────┘
+   └──────────────┘ └──────────────┘ └─────────┘
 ```
 
 ---
 
-## Run
+## Core flows
 
-터미널 3개 필요 (Twilio 전화 기능 사용 시).
+### Voice search — `POST /api/voice-search`
 
-### Terminal 1 — 서버
+```
+multipart: { audio: File, user_lat?, user_lng?, text_query? }
 
-```bash
-cd motzip-server
-uv run uvicorn main:app --reload
+→ voice_search.handle(...):
+    1. STT (Google Cloud Speech, en+ko) → transcript
+       (ElevenLabs Scribe as auto-fallback)
+    2. Gemini extract_filters(transcript) with response_mime_type=json
+       → { categories[], min_rating, max_price, vibe, accessibility, ... }
+    3. Places searchNearby ×7 cuisine groups, dedupe by place_id
+    4. In-process filter pass: rating / price / accessibility / parking / ...
+    5. TTS reply ("Found 3 spots: ...") via Google Cloud TTS
+    6. Return { transcript, restaurants[], audio_base64 }
 ```
 
-http://localhost:8000
+### Batch phone calls — `POST /api/call-restaurant` (per restaurant) + polling
 
-### Terminal 2 — 프론트엔드
+```
+body: { restaurant_id, phone, questions: [presetIds...], custom_question? }
 
-```bash
-cd motzip-app
-npm run dev
+→ twilio_calls.start(...):
+    1. Place outbound call via Twilio Voice
+    2. Twilio hits /api/twilio/voice-greet — TTS the first question
+    3. <Gather> captures answer → /api/twilio/voice-reply
+    4. Per-turn: Speech-to-Text → Gemini parse → ✓/✗/? + raw_answer
+    5. If more questions remain → next <Gather>; else hang up
+    6. State machine: initiated → asking N/M → parsing → completed
+
+GET /api/call-result/{call_sid}
+    → { status, current_question_index, answers: [{question, verdict, raw}], ... }
+
+Frontend polls every ~2 s and renders the streaming checklist per restaurant.
 ```
 
-http://localhost:3000
+### Signature dish extraction — `POST /api/analyze-reviews`
 
-### Terminal 3 — ngrok (Twilio 전화 기능 사용 시만)
-
-```bash
-ngrok http 8000
 ```
+body: { restaurant_name, category, reviews: [string] }
 
-출력된 `https://xxxx.ngrok-free.app` URL을 `.env`의 `NGROK_URL`에 입력 후 서버 재시작.
+→ Gemini one-shot prompt (json mode) → {
+     summary, sentiment{pos,neu,neg},
+     pros[], cons[], signature_dishes[],
+     vibe, best_for[], red_flags[]
+   }
 
-### Terminal 4 (선택) — Ollama
-
-```bash
-ollama serve
+Cached client-side per restaurant_id so the panel can re-open instantly.
 ```
 
 ---
 
-## 주요 기능
+## Hackathon context
 
-### 3D 지도
-- Google Places API로 주변 식당 ~40개 실시간 로드
-- 건물 높이 = 리뷰 수 / 색상 = 평점 (금 → 빨강)
-- 건물 옆 보석(octahedron) 아이콘: 주차/휠체어/라이브뮤직/강아지/칵테일 등 특성 표시
-- Trending 식당 → 주황색 빔 + 불꽃놀이
-
-### 음성 검색
-- 마이크 버튼 꾹 누르고 말하기 → 손 떼면 전송
-- ElevenLabs Scribe STT → Ollama LLM 필터 추출 → Google Places 필터링 → ElevenLabs TTS 응답
-- 예시 쿼리: *"인당 30불 이하 이탈리안 15분 내"*, *"주차 가능한 데이트 식당"*
-- 결과: 조건 맞는 건물만 남고 나머지는 땅속으로 꺼짐 + 파란 스포트라이트
-
-### Twilio 전화 예약
-- 식당 클릭 → "예약 / 대기시간 전화 문의" 버튼 (전화번호 있는 식당만 표시)
-- Twilio가 식당에 전화 → 예약 가능 여부/대기시간 음성으로 문의
-- LLM이 응답 분석 → 앱에 결과 표시 (예약 가능 여부 + 대기 시간)
+- **Event**: Next-Gen Hacks Beta · Spring 2026
+- **Submission**: complete (writeup in [`docs/DEVPOST.md`](./docs/DEVPOST.md))
+- **Status**: ⚖️ judging in progress — results not yet announced
+- **Tracks we built for**:
+  - 🎤 **Voice / multimodal** — push-to-talk → 3D filter + AI phone agent
+  - 🗺️ **3D / spatial** — TRELLIS-generated GLB icons over MapLibre + Three.js
+  - 📞 **Real-time communication** — Twilio chained `<Gather>` with per-turn LLM parsing
+  - ♿ **Accessibility** — removes the phone call as the gatekeeper to dining out (language barrier, deaf/HoH, wheelchair access)
 
 ---
 
-## API 엔드포인트
+## Credits
 
-| Method | Path | 설명 |
-|--------|------|------|
-| GET | `/api/restaurants` | 주변 식당 목록 (Google Places) |
-| POST | `/api/voice-search` | 음성 파일 → 필터링된 식당 목록 + TTS 응답 |
-| POST | `/api/call-restaurant` | Twilio 전화 시작 |
-| GET | `/api/call-result/{call_sid}` | 전화 결과 폴링 |
-| POST | `/api/search` | 텍스트 자연어 → 구조화 필터 (Ollama) |
-| POST | `/api/analyze-reviews` | 리뷰 분석 (Ollama) |
-| GET | `/health` | Ollama 연결 상태 확인 |
+<p align="center">
+  <img src="docs/assets/gcp-removebg-preview.png"    alt="Google Cloud" height="56" />
+  &nbsp;&nbsp;&nbsp;
+  <img src="docs/assets/gemin-removebg-preview.png"  alt="Gemini"       height="56" />
+  &nbsp;&nbsp;&nbsp;
+  <img src="docs/assets/png-transparent-twilio-logo-landscape-tech-companies-removebg-preview.png" alt="Twilio" height="56" />
+  &nbsp;&nbsp;&nbsp;
+  <img src="docs/assets/three.png"                   alt="Three.js"     height="56" />
+</p>
+
+| | Provider | Role |
+|-|----------|------|
+| 🧠 | **Gemini 2.0 Flash API** | Filter extraction · per-call answer parsing · signature dishes |
+| 🗣 | **Google Cloud Speech-to-Text / Text-to-Speech** | Bilingual (en + ko) STT and TTS |
+| 🎙 | **ElevenLabs** (Scribe + Turbo v2.5) | Warmer-voice fallback for local dev |
+| 📍 | **Google Places API (New)** | Restaurant data — 7-group cuisine fan-out |
+| 📞 | **Twilio Voice** | Outbound calls + chained `<Gather>` per question |
+| 🧱 | **Microsoft TRELLIS** | Text-to-3D generation of stylized food + building icons |
+| 🗺 | **MapLibre GL** + **OpenFreeMap** | Vector basemap |
+| 🌐 | **Three.js** | 3D scene rendering inside MapLibre's GL context |
+| ☁️ | **Google Cloud Run · Artifact Registry · Vertex AI** | Backend hosting + LLM auth |
+| ▲ | **Vercel** | Frontend hosting |
 
 ---
 
-## Twilio Trial 계정 제한 사항
+## For developers
 
-Trial 계정은 [Verified Caller IDs](https://console.twilio.com/phone-numbers/verified)에 등록된 번호로만 전화 가능.
-실제 레스토랑 전화 테스트는 계정 업그레이드 후 `TWILIO_TEST_TO` 환경변수를 비워두면 됨.
+Tech stack details, repository layout, environment variables, local-dev
+commands, and deployment recipes all live in
+**[`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md)**.
 
 ---
 
-## 3D 모델 파이프라인 (motzip-3d)
+<div align="center">
 
-사전 빌드된 모델이 `motzip-app/public/models/`에 포함되어 있어 별도 실행 불필요.
-모델 재생성이 필요한 경우 [`motzip-3d/README.md`](./motzip-3d/README.md) 참고.
+**Product name: MotZip** · Repo codename: `next-gen-hacks-beta`
+
+_The phone call is the new search bar._
+
+</div>
