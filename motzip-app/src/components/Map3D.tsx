@@ -5,7 +5,7 @@ import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { restaurants as staticRestaurants } from "@/data/restaurants";
 import { Restaurant } from "@/types/restaurant";
-import { createBuildingCustomLayer, getBuildingTier } from "./BuildingLayer";
+import { createBuildingCustomLayer } from "./BuildingLayer";
 import RestaurantPanel from "./RestaurantPanel";
 import BatchCallPanel from "./BatchCallPanel";
 import Fireworks from "./Fireworks";
@@ -32,24 +32,16 @@ const ICON_FILTER_DEFS: { key: IconFilterKey; label: string; match: (r: Restaura
 function buildGeoJSON(restaurants: Restaurant[]) {
   return {
     type: "FeatureCollection" as const,
-    features: restaurants.map((r) => {
-      const tier = getBuildingTier(r.reviewCount, r.rating);
-      // Hit area must cover the visible mesh:
-      //  - landmark: themed GLB up to ~50*s wide and tall
-      //  - non-landmark: small floating food icon hovering at ~30+ scene units
-      // Square size in degrees; 0.00045 ≈ 50m, 0.00030 ≈ 33m at Boston lat.
-      // Height in meters — generous so floating icons + tall landmarks both register.
-      const size   = tier === "landmark" ? 0.00045 : 0.00030;
-      const height = tier === "landmark" ? 280 : 220;
-      return {
-        type: "Feature" as const,
-        properties: { id: r.id, name: r.name, height },
-        geometry: {
-          type: "Polygon" as const,
-          coordinates: [buildSquare(r.lng, r.lat, size)],
-        },
-      };
-    }),
+    // Every restaurant renders as a floating food icon — uniform hit area sized
+    // to comfortably cover the bobbing icon at its float altitude.
+    features: restaurants.map((r) => ({
+      type: "Feature" as const,
+      properties: { id: r.id, name: r.name, height: 220 },
+      geometry: {
+        type: "Polygon" as const,
+        coordinates: [buildSquare(r.lng, r.lat, 0.00035)],
+      },
+    })),
   };
 }
 
@@ -203,7 +195,7 @@ export default function Map3D() {
       zoom: 14.5,
       pitch: 50,
       bearing: 0,
-      maxPitch: 60,
+      maxPitch: 82,
       minZoom: 12,
     } as maplibregl.MapOptions);
 
@@ -217,15 +209,17 @@ export default function Map3D() {
     map.on("load", () => {
       // ── "Pastel Sunset" theme — storybook palette, all colors lifted toward cream ──
       // Terrain: very soft pastels with warm undertone — parks now properly green
+      // Pastel palette — soft cream base with light pastel accents so the
+      // dark beams + saturated food models stand out clearly.
       const muteFills: Record<string, string> = {
         background:           "#fbf2dd",  // pastel cream
-        park:                 "#9ed6a0",  // vivid pastel green
-        landcover_grass:      "#b8e0b6",  // lighter green
-        landcover_wood:       "#7ec98a",  // deeper forest pastel
-        water:                "#c4dbd8",  // pastel mint
-        landuse_residential:  "#f3e7d0",  // soft peach-cream
+        landuse_residential:  "#f3e7d0",
         landuse_commercial:   "#f3e6cf",
         building:             "#ecd8be",  // pastel beige
+        park:                 "#9ed6a0",  // vivid pastel green
+        landcover_grass:      "#b8e0b6",
+        landcover_wood:       "#7ec98a",
+        water:                "#c4dbd8",  // pastel mint
       };
       for (const [id, color] of Object.entries(muteFills)) {
         const lyr = map.getLayer(id);
@@ -237,25 +231,41 @@ export default function Map3D() {
         } catch {}
       }
 
-      // Roads/features: pastel rainbow within the sunset family
+      // Roads/transit: barely-distinguishable from background — subtle grid only.
       const vividLines: Record<string, string> = {
-        highway_motorway_inner:    "#f08a7a",  // pastel peach-coral
-        highway_motorway_casing:   "#cf7068",  // dusty coral
-        highway_motorway_subtle:   "#fab9a8",  // very soft coral
-        highway_major_inner:       "#f8c878",  // butter amber
-        highway_major_casing:      "#cd9658",  // toasted amber
-        highway_major_subtle:      "#fde2ad",  // soft butter
-        highway_minor:             "#eea4b8",  // soft pink
-        highway_path:              "#daa088",  // soft terracotta
-        railway:                   "#84c8c2",  // pastel teal
-        railway_transit:           "#c5a0c5",  // lavender
-        railway_service:           "#a8d8d2",  // light pastel teal
-        waterway:                  "#84c8c2",  // matches railway pastel teal
+        highway_motorway_inner:    "#dccfb6",
+        highway_motorway_casing:   "#c8b89d",
+        highway_motorway_subtle:   "#e3d8c0",
+        highway_major_inner:       "#d8ccb4",
+        highway_major_casing:      "#c2b194",
+        highway_major_subtle:      "#dccfb6",
+        highway_minor:             "#d2c5ad",
+        highway_path:              "#c8baa0",
+        railway:                   "#cebea4",
+        railway_transit:           "#cebea4",
+        railway_service:           "#c2b292",
+        waterway:                  "#a5c4c0",
       };
       for (const [id, color] of Object.entries(vividLines)) {
         if (!map.getLayer(id)) continue;
         try {
           map.setPaintProperty(id, "line-color", color);
+        } catch {}
+      }
+
+      // Catch-all: dim every remaining road/rail/transit/bridge/tunnel/aeroway
+      // line so subways and major roads we didn't explicitly name don't pop.
+      const ROAD_DIM_PATTERNS = /highway|road|rail|transit|subway|bridge|tunnel|street|track|service|aeroway|ferry|path|cycleway|pedestrian/i;
+      const ROAD_DIM_COLOR = "#d8cdb8";  // soft warm grey, blends with cream
+      for (const layer of (map.getStyle().layers || [])) {
+        if (!ROAD_DIM_PATTERNS.test(layer.id)) continue;
+        if (layer.id.includes("name") || layer.id.includes("label")) continue; // skip text
+        try {
+          if (layer.type === "line") {
+            map.setPaintProperty(layer.id, "line-color", ROAD_DIM_COLOR);
+          } else if (layer.type === "fill") {
+            map.setPaintProperty(layer.id, "fill-color", ROAD_DIM_COLOR);
+          }
         } catch {}
       }
 
