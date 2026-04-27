@@ -11,12 +11,12 @@ then have an AI agent call every restaurant in parallel and return ✓/✗/?
 answers — reservations, accessibility, parking, allergens — in any language.
 
 [![Submission status](https://img.shields.io/badge/🏗️_Next--Gen_Hacks_Beta-judging_in_progress-FFD166?style=for-the-badge)](#hackathon-context)
-[![Watch demo](https://img.shields.io/badge/▶_Watch_demo-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=y0-sebdw99I)
+[![Watch demo](https://img.shields.io/badge/▶_Watch_demo-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/a8UhKh7S4FU)
 [![Live app](https://img.shields.io/badge/🌐_Live-motzip.vercel.app-B5E48C?style=for-the-badge)](https://motzip.vercel.app)
 
 **Next-Gen Hacks Beta · Spring 2026** · Voice + 3D + Real-time Communication tracks
 
-<a href="https://www.youtube.com/watch?v=y0-sebdw99I">
+<a href="https://youtu.be/a8UhKh7S4FU">
   <img src="docs/assets/motzip_thumbnail.jpg" alt="MotZip — watch the demo on YouTube" width="720" />
 </a>
 
@@ -90,7 +90,7 @@ each answer transcribed and parsed independently.
 
 | Surface | URL |
 |---------|-----|
-| 🎥 **Demo video** | https://www.youtube.com/watch?v=y0-sebdw99I |
+| 🎥 **Demo video** | https://youtu.be/a8UhKh7S4FU |
 | 🌐 **Frontend** | https://motzip.vercel.app |
 | 🎬 Demo storyboard | [`docs/STORYBOARD.md`](./docs/STORYBOARD.md) |
 | 🎤 Presentation outline | [`docs/PRESENTATION.md`](./docs/PRESENTATION.md) |
