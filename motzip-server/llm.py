@@ -118,6 +118,10 @@ async def _gemini_generate_json(
                 temperature=temperature,
                 max_output_tokens=num_predict,
                 response_mime_type="application/json",
+                # Gemini 2.5+ does internal "thinking" by default. For our
+                # cheap structured-extraction tasks it adds latency without
+                # helping accuracy, so disable it.
+                thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
             ),
         )
         return resp.text or ""
@@ -141,6 +145,7 @@ async def _gemini_generate_text(
                 system_instruction=system,
                 temperature=temperature,
                 max_output_tokens=num_predict,
+                thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
             ),
         )
         return resp.text or ""
